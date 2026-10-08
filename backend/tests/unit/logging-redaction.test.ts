@@ -3,9 +3,12 @@ import { describe, expect, it } from 'vitest';
 import { buildApp } from '../../src/app.js';
 import { loadConfig } from '../../src/config/env.js';
 import { loggerOptions, type AppLoggerOptions } from '../../src/shared/logging/logger-options.js';
+import type { Database } from '../../src/shared/database/index.js';
 
 const config = loadConfig({ DATABASE_URL: 'postgresql://app:change_me@127.0.0.1:5432/db' });
-const db = { health: () => Promise.resolve({ ok: true as const, serverVersion: '16' }) };
+const db = {
+  health: () => Promise.resolve({ ok: true as const, serverVersion: '16' }),
+} as unknown as Database;
 
 function capture() {
   const lines: string[] = [];

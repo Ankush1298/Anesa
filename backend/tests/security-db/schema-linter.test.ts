@@ -85,7 +85,12 @@ describe('schema linter (S-2)', () => {
       expect(permissive(t), t).toEqual(['DELETE', 'INSERT', 'SELECT', 'UPDATE']);
     }
     for (const p of pol) {
-      if (p.tablename === 'users' && p.cmd === 'SELECT' && p.roles === '{app_migrator}') continue; // the probe policy
+      if (
+        (p.tablename === 'users' || p.tablename === 'organizations') &&
+        p.cmd === 'SELECT' &&
+        p.roles === '{app_migrator}'
+      )
+        continue; // the probe policy
       expect(p.roles, `${p.tablename}.${p.cmd}`).toBe('{app_runtime}');
     }
   });

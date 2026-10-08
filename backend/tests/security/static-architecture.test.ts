@@ -79,7 +79,8 @@ describe('runtime code can only reach PostgreSQL through the tenant-scoped abstr
     const importers = srcFiles.filter(
       (f) =>
         /from ['"][^'"]*issue-trusted-context/.test(f.text) &&
-        !f.path.includes('issue-trusted-context'),
+        !f.path.includes('issue-trusted-context') &&
+        !f.path.startsWith('src/modules/auth/'),
     );
     expect(importers.map((f) => f.path)).toEqual([]);
   });

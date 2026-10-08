@@ -1,9 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import Fastify, { type FastifyInstance } from 'fastify';
 import type { AppConfig } from './config/env.js';
-import { registerHealthRoutes, type HealthSource } from './modules/health/health.routes.js';
+import { registerHealthRoutes } from './modules/health/health.routes.js';
 import { registerHardening } from './shared/http/hardening.js';
 import { loggerOptions, type AppLoggerOptions } from './shared/logging/logger-options.js';
+import fastifyCookie from '@fastify/cookie';
+import authHook from './modules/auth/auth.hook.js';
+import { registerAuthRoutes } from './modules/auth/auth.routes.js';
+import { AuthService } from './modules/auth/auth.service.js';
+import { AuthRepository } from './modules/auth/auth.repository.js';
+import type { Database } from './shared/database/index.js';
 
 declare module 'fastify' {
   interface FastifyContextConfig {
@@ -14,7 +20,7 @@ declare module 'fastify' {
 
 export interface AppDeps {
   config: AppConfig;
-  db: HealthSource;
+  db: Database;
   /** Tests may pass `false` to silence logs or a custom pino-compatible stream via logger options. */
   logger?: AppLoggerOptions | false;
 }
@@ -31,7 +37,20 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   });
 
   registerHardening(app, { production: config.env === 'production' });
+
+  // Register fastify-cookie
+  app.register(fastifyCookie, {
+    secret: 'change_me_session_secret',
+  });
+
+  const authRepository = new AuthRepository();
+  const authService = new AuthService(deps.db, authRepository);
+
+  // Register auth hook to protect routes
+  app.register(authHook, { authService });
+
   registerHealthRoutes(app, { db: deps.db });
+  registerAuthRoutes(app, { authService });
 
   return app;
 }

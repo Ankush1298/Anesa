@@ -81,7 +81,7 @@ describe('role attributes (Invariant E)', () => {
     }
   });
 
-  it('runtime cannot even see the platform schema or create anything anywhere', async () => {
+  it('runtime cannot create anything anywhere but can use platform schema', async () => {
     const [r] = await adminQuery<Record<string, boolean>>(
       `SELECT has_schema_privilege('app_runtime','platform','USAGE') AS platform_usage,
               has_schema_privilege('app_runtime','app','CREATE')      AS app_create,
@@ -90,7 +90,7 @@ describe('role attributes (Invariant E)', () => {
               has_database_privilege('app_runtime', current_database(), 'CREATE') AS db_create`,
     );
     expect(r).toEqual({
-      platform_usage: false,
+      platform_usage: true,
       app_create: false,
       public_create: false,
       public_usage: false,

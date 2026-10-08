@@ -66,6 +66,34 @@ export class Database {
     }
   }
 
+  /**
+   * For authentication and platform-level operations that run *before* a tenant context
+   * is established (e.g. login, session validation).
+   */
+  async withSystem<T>(work: (tx: TenantTx) => Promise<T>): Promise<T> {
+    const client = await this.pool.connect();
+    let tx: TenantTx | undefined;
+    let connectionBroken = false;
+    try {
+      await client.query('BEGIN');
+      tx = openTenantTx(client);
+      const result = await work(tx);
+      closeTenantTx(tx);
+      await client.query('COMMIT');
+      return result;
+    } catch (err) {
+      if (tx) closeTenantTx(tx);
+      try {
+        await client.query('ROLLBACK');
+      } catch {
+        connectionBroken = true;
+      }
+      throw err;
+    } finally {
+      client.release(connectionBroken ? true : undefined);
+    }
+  }
+
   health(): Promise<DatabaseStatus> {
     return checkDatabase(this.pool);
   }

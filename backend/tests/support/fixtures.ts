@@ -59,13 +59,25 @@ export async function seedFixtures(adminUrl: string): Promise<void> {
       `INSERT INTO app.organizations (id, name, slug) VALUES ($1, 'College A', 'college-a'), ($2, 'College B', 'college-b')`,
       [ORG_A, ORG_B],
     );
+
+    // Create identities for the users
     await c.query(
-      `INSERT INTO app.users (id, organization_id, email, display_name, status) VALUES
-         ($1, $6, 'user.a@college-a.test',  'User A',  'ACTIVE'),
-         ($2, $6, 'user.a2@college-a.test', 'User A2', 'ACTIVE'),
-         ($3, $6, 'staff.a@college-a.test', 'Staff A', 'ACTIVE'),
-         ($4, $7, 'user.b@college-b.test',  'User B',  'ACTIVE'),
-         ($5, $7, 'staff.b@college-b.test', 'Staff B', 'ACTIVE')`,
+      `INSERT INTO platform.identities (id, email, password_hash, status) VALUES
+         ($1, 'user.a@college-a.test', 'test-hash', 'ACTIVE'),
+         ($2, 'user.a2@college-a.test', 'test-hash', 'ACTIVE'),
+         ($3, 'staff.a@college-a.test', 'test-hash', 'ACTIVE'),
+         ($4, 'user.b@college-b.test', 'test-hash', 'ACTIVE'),
+         ($5, 'staff.b@college-b.test', 'test-hash', 'ACTIVE')`,
+      [USER_A, USER_A2, STAFF_A, USER_B, STAFF_B],
+    );
+
+    await c.query(
+      `INSERT INTO app.users (id, organization_id, email, display_name, status, identity_id) VALUES
+         ($1, $6, 'user.a@college-a.test',  'User A',  'ACTIVE', $1),
+         ($2, $6, 'user.a2@college-a.test', 'User A2', 'ACTIVE', $2),
+         ($3, $6, 'staff.a@college-a.test', 'Staff A', 'ACTIVE', $3),
+         ($4, $7, 'user.b@college-b.test',  'User B',  'ACTIVE', $4),
+         ($5, $7, 'staff.b@college-b.test', 'Staff B', 'ACTIVE', $5)`,
       [USER_A, USER_A2, STAFF_A, USER_B, STAFF_B, ORG_A, ORG_B],
     );
     await c.query(
@@ -87,7 +99,11 @@ export async function seedFixtures(adminUrl: string): Promise<void> {
       [ORG_C],
     );
     await c.query(
-      `INSERT INTO app.users (id, organization_id, email, display_name, status) VALUES ($1, $2, 'staff.c@college-c.test', 'Staff C', 'ACTIVE')`,
+      `INSERT INTO platform.identities (id, email, password_hash, status) VALUES ($1, 'staff.c@college-c.test', 'test-hash', 'ACTIVE')`,
+      [STAFF_C],
+    );
+    await c.query(
+      `INSERT INTO app.users (id, organization_id, email, display_name, status, identity_id) VALUES ($1, $2, 'staff.c@college-c.test', 'Staff C', 'ACTIVE', $1)`,
       [STAFF_C, ORG_C],
     );
     await c.query('COMMIT');

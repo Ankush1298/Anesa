@@ -93,24 +93,24 @@ async function fingerprint(adminUrl: string): Promise<string> {
 describe('migrations from a clean database', () => {
   it('migration files are ordered, contiguous and checksummed', () => {
     const m = loadMigrations();
-    expect(m.map((x) => x.version)).toEqual(['0001', '0002', '0003']);
+    expect(m.map((x) => x.version)).toEqual(['0001', '0002', '0003', '0004']);
     expect(m.every((x) => /^[0-9a-f]{64}$/.test(x.checksum))).toBe(true);
   });
 
   it('applies everything on an empty database, records checksums and is a no-op the second time', async () => {
     const db = await freshDatabase();
     const first = await migrate({ connectionString: db.migrator });
-    expect(first.applied).toEqual(['0001', '0002', '0003']);
+    expect(first.applied).toEqual(['0001', '0002', '0003', '0004']);
     const ledger = await one<{ version: string; checksum: string; applied_by: string }>(
       db.admin,
       'SELECT version, checksum, applied_by FROM platform.schema_migrations ORDER BY version',
     );
-    expect(ledger.map((l) => l.version)).toEqual(['0001', '0002', '0003']);
+    expect(ledger.map((l) => l.version)).toEqual(['0001', '0002', '0003', '0004']);
     expect(new Set(ledger.map((l) => l.applied_by))).toEqual(new Set(['app_migrator']));
     expect(ledger.map((l) => l.checksum.trim())).toEqual(loadMigrations().map((m) => m.checksum));
     const second = await migrate({ connectionString: db.migrator });
     expect(second.applied).toEqual([]);
-    expect(second.alreadyApplied).toEqual(['0001', '0002', '0003']);
+    expect(second.alreadyApplied).toEqual(['0001', '0002', '0003', '0004']);
   });
 
   it('refuses to run as anyone but app_migrator (so objects can never be owned by the wrong role)', async () => {
@@ -137,7 +137,7 @@ describe('migrations from a clean database', () => {
     const db = await freshDatabase();
     await migrate({ connectionString: db.migrator });
     const dir = mkdtempSync(join(tmpdir(), 'campusos-mig-'));
-    for (const f of readdirSync(DEFAULT_MIGRATIONS_DIR).filter((x) => !x.startsWith('0003'))) {
+    for (const f of readdirSync(DEFAULT_MIGRATIONS_DIR).filter((x) => !x.startsWith('0004'))) {
       cpSync(join(DEFAULT_MIGRATIONS_DIR, f), join(dir, f));
     }
     await expect(migrate({ connectionString: db.migrator, dir })).rejects.toThrow(
@@ -199,7 +199,7 @@ describe('migrations from a clean database', () => {
     created.splice(created.indexOf(db.name), 1);
     const again = await freshDatabase();
     const result = await migrate({ connectionString: again.migrator });
-    expect(result.applied).toEqual(['0001', '0002', '0003']);
+    expect(result.applied).toEqual(['0001', '0002', '0003', '0004']);
     expect(await fingerprint(again.admin)).toBe(schemaBefore);
     await seedFixtures(again.admin); // seeds cleanly into the re-created schema
   });

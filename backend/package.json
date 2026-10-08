@@ -22,7 +22,11 @@
     "test:security:db": "vitest run --project security-db"
   },
   "dependencies": {
+    "@fastify/cookie": "^11.1.3",
+    "@sinclair/typebox": "^0.34.52",
+    "argon2": "^0.45.1",
     "fastify": "^5.12.5",
+    "fastify-plugin": "^6.0.0",
     "pg": "^8.23.1",
     "zod": "^4.6.5"
   },

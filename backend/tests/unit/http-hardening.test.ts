@@ -2,10 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { buildApp } from '../../src/app.js';
 import { loadConfig } from '../../src/config/env.js';
 import { AppError } from '../../src/shared/errors/http-errors.js';
+import type { Database } from '../../src/shared/database/index.js';
 
 const config = loadConfig({ DATABASE_URL: 'postgresql://app:change_me@127.0.0.1:5432/db' });
 // health source that reports the database as unreachable
-const db = { health: () => Promise.resolve({ ok: false as const }) };
+const db = { health: () => Promise.resolve({ ok: false as const }) } as unknown as Database;
 
 function app() {
   return buildApp({ config, db, logger: false });
@@ -43,7 +44,7 @@ describe('HTTP hardening', () => {
 
   it('does not leak internals on unexpected errors', async () => {
     const a = app();
-    a.get('/boom', () => {
+    a.get('/boom', { config: { public: true } }, () => {
       throw new Error('secret internal detail: password=hunter2');
     });
     const res = await a.inject({ method: 'GET', url: '/boom' });
@@ -55,7 +56,7 @@ describe('HTTP hardening', () => {
 
   it('maps AppError to its status without extra detail', async () => {
     const a = app();
-    a.get('/denied', () => {
+    a.get('/denied', { config: { public: true } }, () => {
       throw new AppError(403, 'FORBIDDEN', 'Not allowed.');
     });
     const res = await a.inject({ method: 'GET', url: '/denied' });
@@ -65,7 +66,7 @@ describe('HTTP hardening', () => {
 
   it('rejects malformed JSON with a generic 400', async () => {
     const a = app();
-    a.post('/echo', (req) => req.body);
+    a.post('/echo', { config: { public: true } }, (req) => req.body);
     const res = await a.inject({
       method: 'POST',
       url: '/echo',

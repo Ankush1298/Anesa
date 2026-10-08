@@ -51,6 +51,7 @@ export function registerHardening(app: FastifyInstance, opts: { production: bool
       return;
     }
     req.log.error({ err }, 'unhandled error');
+    // Log internally but do not leak details
     void reply
       .status(500)
       .send(envelope(req.id, 'INTERNAL_ERROR', 'An unexpected error occurred.'));

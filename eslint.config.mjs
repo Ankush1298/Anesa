@@ -27,7 +27,7 @@ const MODULE_IMPORT_RULES = {
     {
       group: ['**/issue-trusted-context*', '**/context-registry*'],
       message:
-        'Only the authentication layer (src/modules/iam) may issue a TrustedContext. Never build one from request data.',
+        'Only the authentication layer (src/modules/auth) may issue a TrustedContext. Never build one from request data.',
     },
     {
       group: ['**/tools/**', '**/database/migrations/**'],
@@ -86,7 +86,7 @@ export default tseslint.config(
   },
   // The authentication layer is the one place allowed to issue a TrustedContext (still no driver).
   {
-    files: ['backend/src/modules/iam/**/*.ts'],
+    files: ['backend/src/modules/auth/**/*.ts'],
     rules: {
       'no-restricted-imports': [
         'error',

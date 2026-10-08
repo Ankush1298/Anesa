@@ -65,13 +65,13 @@ describe('architecture lint gates (S-1)', () => {
     expect(ids).not.toContain('no-restricted-imports');
   });
 
-  it('forbids business modules from issuing a TrustedContext (only src/modules/iam may)', async () => {
+  it('forbids business modules from issuing a TrustedContext (only src/modules/auth may)', async () => {
     const code =
       "import { issueTrustedContext } from '../../shared/tenancy/issue-trusted-context.js';\nexport const x = issueTrustedContext;\n";
     expect(await ruleIds(code, 'backend/src/modules/health/probe.ts')).toContain(
       'no-restricted-imports',
     );
-    expect(await ruleIds(code, 'backend/src/modules/iam/probe.ts')).not.toContain(
+    expect(await ruleIds(code, 'backend/src/modules/auth/probe.ts')).not.toContain(
       'no-restricted-imports',
     );
   });
