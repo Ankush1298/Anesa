@@ -1,0 +1,32 @@
+{
+  "name": "campus-os",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Smart Campus OS monorepo (architecture baseline v3.1)",
+  "packageManager": "pnpm@10.34.6",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "pnpm -r --if-present run typecheck",
+    "test": "pnpm -r --if-present run test",
+    "test:unit": "pnpm --filter @campusos/backend run test:unit",
+    "test:integration": "pnpm --filter @campusos/backend run test:integration",
+    "test:security": "pnpm --filter @campusos/backend run test:security",
+    "check:secrets": "pnpm --filter @campusos/backend run check:secrets",
+    "verify": "pnpm lint && pnpm format:check && pnpm typecheck && pnpm test && pnpm check:secrets",
+    "dev": "pnpm --filter @campusos/backend run dev",
+    "dev:db": "pnpm --filter @campusos/backend run dev:db"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.0",
+    "eslint": "^10.12.0",
+    "prettier": "^3.6.0",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.71.1"
+  }
+}

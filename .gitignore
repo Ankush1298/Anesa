@@ -1,0 +1,26 @@
+# dependencies / build
+node_modules/
+dist/
+coverage/
+.pnpm-store/
+*.tsbuildinfo
+
+# local data (embedded dev Postgres, uploads, caches)
+.data/
+
+# secrets: only .env.example is tracked
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+
+# logs / OS / editor
+*.log
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json

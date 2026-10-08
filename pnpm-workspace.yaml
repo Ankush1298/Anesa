@@ -1,0 +1,15 @@
+# Workspaces that are part of the build. services/face-service and any face/biometric
+# code are intentionally NOT listed (ADR-016: deferred, isolated optional module).
+packages:
+  - backend
+  - packages/*
+  - apps/*
+
+# Only packages that genuinely need install scripts may run them (supply-chain hygiene).
+onlyBuiltDependencies:
+  - esbuild
+  # Dev/test-only: unpacks symlinks for the throw-away PostgreSQL binaries used by tests (not shipped).
+  - '@embedded-postgres/darwin-arm64'
+  - '@embedded-postgres/darwin-x64'
+  - '@embedded-postgres/linux-x64'
+  - '@embedded-postgres/linux-arm64'

@@ -1,0 +1,28 @@
+# Local development services. Only PostgreSQL in Slice 0; later slices add PgBouncer (1),
+# Redis (5), MinIO + ClamAV (6) and a mail sandbox (8).
+# Usage:  docker compose --env-file .env -f infrastructure/docker/docker-compose.yml up -d
+# No face/biometric service is part of this stack (ADR-016).
+name: campusos-dev
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: campusos
+      POSTGRES_DB: campusos_dev
+      # No default: compose refuses to start without a password from your local .env.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (see setup-dev.sh)}
+    ports:
+      # Loopback only; never publish the database on a public interface.
+      - '127.0.0.1:54329:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U campusos -d campusos_dev']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres_data:
