@@ -21,12 +21,22 @@ describe('End-to-End Authentication Smoke Test', () => {
     const db = new Database(pool);
     app = buildApp({ config, db, logger: false });
 
-    app.get('/test-rls', { config: { public: false } }, async (req, reply) => {
-      const users = await db.withTenant(req.tenantContext!, async (tx) => {
-        return (await tx.query('SELECT id FROM app.users')).rows;
-      });
-      return reply.send({ users });
-    });
+    app.get(
+      '/test-rls',
+      {
+        config: {
+          public: false,
+          permission: 'session.read',
+          extractScope: (req) => ({ user_id: req.tenantContext!.userId }),
+        },
+      },
+      async (req, reply) => {
+        const users = await db.withTenant(req.tenantContext!, async (tx) => {
+          return (await tx.query('SELECT id FROM app.users')).rows;
+        });
+        return reply.send({ users });
+      },
+    );
 
     await app.ready();
 

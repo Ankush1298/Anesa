@@ -8,7 +8,15 @@ import {
   runStepsAsMigrator,
 } from '../support/db-harness.js';
 
-const APP_TABLES = ['organizations', 'users', 'students', 'student_guardians'];
+const APP_TABLES = [
+  'organizations',
+  'role_assignments',
+  'role_permissions',
+  'roles',
+  'users',
+  'students',
+  'student_guardians',
+];
 
 describe('real PostgreSQL 16 server', () => {
   it('the security suite runs against PostgreSQL 16.x', async () => {

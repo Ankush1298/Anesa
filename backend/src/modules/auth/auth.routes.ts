@@ -63,18 +63,27 @@ export function registerAuthRoutes(
     },
   );
 
-  app.get('/auth/me', async (request, reply) => {
-    // This route requires authentication. Fastify hooks will run and attach the context to request.tenantContext.
-    // See auth.hook.ts for how we attach this.
-    const ctx = request.tenantContext;
-    if (!ctx) {
-      return reply.code(401).send({ error: 'UNAUTHORIZED' });
-    }
+  app.get(
+    '/auth/me',
+    {
+      config: {
+        permission: 'session.read',
+        extractScope: (req) => ({ user_id: req.tenantContext!.userId }),
+      },
+    },
+    async (request, reply) => {
+      // This route requires authentication. Fastify hooks will run and attach the context to request.tenantContext.
+      // See auth.hook.ts for how we attach this.
+      const ctx = request.tenantContext;
+      if (!ctx) {
+        return reply.code(401).send({ error: 'UNAUTHORIZED' });
+      }
 
-    return reply.send({
-      tenant_id: ctx.tenantId,
-      user_id: ctx.userId,
-      actor_kind: ctx.actorKind,
-    });
-  });
+      return reply.send({
+        tenant_id: ctx.tenantId,
+        user_id: ctx.userId,
+        actor_kind: ctx.actorKind,
+      });
+    },
+  );
 }

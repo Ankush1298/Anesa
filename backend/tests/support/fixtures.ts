@@ -106,6 +106,70 @@ export async function seedFixtures(adminUrl: string): Promise<void> {
       `INSERT INTO app.users (id, organization_id, email, display_name, status, identity_id) VALUES ($1, $2, 'staff.c@college-c.test', 'Staff C', 'ACTIVE', $1)`,
       [STAFF_C, ORG_C],
     );
+
+    // Roles and permissions
+    for (const org of [ORG_A, ORG_B]) {
+      const p = org === ORG_A ? 'a' : 'b';
+      const roleStudent = `01939a00-0000-7000-8000-00000000${p}701`;
+      const roleFaculty = `01939a00-0000-7000-8000-00000000${p}702`;
+      const roleAdmin = `01939a00-0000-7000-8000-00000000${p}703`;
+
+      // Seed roles for each org
+      await c.query(`
+        INSERT INTO app.roles (id, organization_id, code, name) VALUES
+          ('${roleStudent}', '${org}', 'STUDENT', 'STUDENT'),
+          ('${roleFaculty}', '${org}', 'FACULTY', 'FACULTY'),
+          ('${roleAdmin}', '${org}', 'CAMPUS_ADMIN', 'CAMPUS_ADMIN')
+      `);
+
+      await c.query(`
+        INSERT INTO app.role_permissions (organization_id, role_id, permission_code, scope_mode)
+        VALUES ('${org}', '${roleStudent}', 'student.profile.read', 'SELF')
+      `);
+      await c.query(`
+        INSERT INTO app.role_permissions (organization_id, role_id, permission_code, scope_mode)
+        VALUES ('${org}', '${roleStudent}', 'session.read', 'SELF')
+      `);
+      await c.query(`
+        INSERT INTO app.role_permissions (organization_id, role_id, permission_code, scope_mode)
+        VALUES ('${org}', '${roleFaculty}', 'attendance.session.mark', 'ASSIGNED')
+      `);
+      await c.query(`
+        INSERT INTO app.role_permissions (organization_id, role_id, permission_code, scope_mode)
+        VALUES ('${org}', '${roleFaculty}', 'session.read', 'SELF')
+      `);
+      await c.query(`
+        INSERT INTO app.role_permissions (organization_id, role_id, permission_code, scope_mode)
+        VALUES ('${org}', '${roleAdmin}', 'student.profile.read', 'GRANTED')
+      `);
+      await c.query(`
+        INSERT INTO app.role_permissions (organization_id, role_id, permission_code, scope_mode)
+        VALUES ('${org}', '${roleAdmin}', 'role.assignment.grant', 'GRANTED')
+      `);
+      await c.query(`
+        INSERT INTO app.role_permissions (organization_id, role_id, permission_code, scope_mode)
+        VALUES ('${org}', '${roleAdmin}', 'role.assignment.revoke', 'GRANTED')
+      `);
+      await c.query(`
+        INSERT INTO app.role_permissions (organization_id, role_id, permission_code, scope_mode)
+        VALUES ('${org}', '${roleAdmin}', 'session.read', 'SELF')
+      `);
+    }
+
+    // Role Assignments
+    await c.query(`
+      INSERT INTO app.role_assignments (id, organization_id, user_id, role_id, scope_type)
+      VALUES ('01939a00-0000-7000-8000-00000000a801', '${ORG_A}', '${USER_A}', '01939a00-0000-7000-8000-00000000a701', 'ORGANIZATION')
+    `);
+    await c.query(`
+      INSERT INTO app.role_assignments (id, organization_id, user_id, role_id, scope_type)
+      VALUES ('01939a00-0000-7000-8000-00000000a802', '${ORG_A}', '${STAFF_A}', '01939a00-0000-7000-8000-00000000a703', 'ORGANIZATION')
+    `);
+    await c.query(`
+      INSERT INTO app.role_assignments (id, organization_id, user_id, role_id, scope_type)
+      VALUES ('01939a00-0000-7000-8000-00000000b801', '${ORG_B}', '${USER_B}', '01939a00-0000-7000-8000-00000000b701', 'ORGANIZATION')
+    `);
+
     await c.query('COMMIT');
   } catch (err) {
     await c.query('ROLLBACK');

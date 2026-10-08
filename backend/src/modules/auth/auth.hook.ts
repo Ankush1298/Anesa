@@ -3,30 +3,35 @@ import fp from 'fastify-plugin';
 import type { AuthService } from './auth.service.js';
 import type { TrustedContext } from '../../shared/tenancy/trusted-context.js';
 import { AppError } from '../../shared/errors/http-errors.js';
+import { AuthorizationEngine, type ResourceScope } from '../../shared/authorization/engine.js';
+import type { Database } from '../../shared/database/index.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
     tenantContext?: TrustedContext;
   }
+  interface FastifyContextConfig {
+    permission?: string;
+    extractScope?: (req: FastifyRequest) => ResourceScope | undefined;
+  }
 }
 
 export interface AuthPluginOptions {
   authService: AuthService;
+  db: Database;
 }
 
 const authPlugin: FastifyPluginAsync<AuthPluginOptions> = async (app, opts) => {
-  // We need to keep async to satisfy FastifyPluginAsync signature or just use FastifyPluginCallback.
-  // Actually, I can just add `await Promise.resolve()` to satisfy eslint.
   await Promise.resolve();
   app.decorateRequest('tenantContext', undefined);
 
   app.addHook('onRequest', (request, _reply, done) => {
-    // Skip public routes and 404s
+    // 1. Identity & Auth Check
     if (request.routeOptions?.config?.public || request.is404) {
       return done();
     }
 
-    const run = async () => {
+    const runAuth = async () => {
       const token = request.cookies.session_token;
       if (!token) {
         throw new AppError(401, 'UNAUTHORIZED', 'Missing authentication token');
@@ -43,9 +48,37 @@ const authPlugin: FastifyPluginAsync<AuthPluginOptions> = async (app, opts) => {
       }
     };
 
-    run()
+    runAuth()
       .then(() => done())
       .catch((err) => done(err));
+  });
+
+  app.addHook('preHandler', async (request, _reply) => {
+    // 2. Authorization Check (Slice 3)
+    if (request.routeOptions?.config?.public || request.is404) {
+      return;
+    }
+
+    const ctx = request.tenantContext;
+    if (!ctx) {
+      throw new AppError(401, 'UNAUTHORIZED', 'Authentication required');
+    }
+
+    const config = request.routeOptions?.config;
+    if (!config || !config.permission) {
+      throw new AppError(
+        500,
+        'INTERNAL_ERROR',
+        'Route is missing required permission configuration',
+      );
+    }
+
+    const scope = config.extractScope ? config.extractScope(request) : undefined;
+
+    // We execute the check using the configured permission and scope extractor
+    await opts.db.withTenant(ctx, async (tx) => {
+      await AuthorizationEngine.assert(tx, ctx, config.permission as string, scope);
+    });
   });
 };
 

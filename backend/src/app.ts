@@ -47,7 +47,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   const authService = new AuthService(deps.db, authRepository);
 
   // Register auth hook to protect routes
-  app.register(authHook, { authService });
+  app.register(authHook, { authService, db: deps.db });
 
   registerHealthRoutes(app, { db: deps.db });
   registerAuthRoutes(app, { authService });
