@@ -1,8 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import Fastify, { type FastifyInstance } from 'fastify';
 import type { AppConfig } from './config/env.js';
-import { registerHealthRoutes } from './modules/health/health.routes.js';
-import type { Queryable } from './shared/database/pool.js';
+import { registerHealthRoutes, type HealthSource } from './modules/health/health.routes.js';
 import { registerHardening } from './shared/http/hardening.js';
 import { loggerOptions, type AppLoggerOptions } from './shared/logging/logger-options.js';
 
@@ -15,7 +14,7 @@ declare module 'fastify' {
 
 export interface AppDeps {
   config: AppConfig;
-  db: Queryable;
+  db: HealthSource;
   /** Tests may pass `false` to silence logs or a custom pino-compatible stream via logger options. */
   logger?: AppLoggerOptions | false;
 }

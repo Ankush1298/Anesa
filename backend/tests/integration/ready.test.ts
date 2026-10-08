@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, inject, it } from 'vitest';
 import { buildApp } from '../../src/app.js';
 import { loadConfig } from '../../src/config/env.js';
+import { Database } from '../../src/shared/database/index.js';
 import { createPool } from '../../src/shared/database/pool.js';
 
 const url = inject('dbUrl');
@@ -13,7 +14,7 @@ afterAll(async () => {
 
 describe('readiness with a real database', () => {
   it('GET /ready is 200 when the database answers', async () => {
-    const app = buildApp({ config, db: pool, logger: false });
+    const app = buildApp({ config, db: new Database(pool), logger: false });
     const res = await app.inject({ method: 'GET', url: '/ready' });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ status: 'ready' });

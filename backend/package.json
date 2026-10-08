@@ -15,8 +15,11 @@
     "test": "vitest run",
     "test:unit": "vitest run --project unit",
     "test:integration": "vitest run --project integration",
-    "test:security": "vitest run --project security",
-    "check:secrets": "tsx scripts/check-secrets.ts"
+    "test:security": "vitest run --project security --project security-db",
+    "check:secrets": "tsx scripts/check-secrets.ts",
+    "db:bootstrap": "tsx --env-file-if-exists=../.env tools/db/cli.ts bootstrap",
+    "db:migrate": "tsx --env-file-if-exists=../.env tools/db/cli.ts migrate",
+    "test:security:db": "vitest run --project security-db"
   },
   "dependencies": {
     "fastify": "^5.12.5",

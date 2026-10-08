@@ -5,7 +5,7 @@ import { loadConfig } from '../../src/config/env.js';
 import { loggerOptions, type AppLoggerOptions } from '../../src/shared/logging/logger-options.js';
 
 const config = loadConfig({ DATABASE_URL: 'postgresql://app:change_me@127.0.0.1:5432/db' });
-const db = { query: () => Promise.resolve({ rows: [{ v: '16' }] }) } as never;
+const db = { health: () => Promise.resolve({ ok: true as const, serverVersion: '16' }) };
 
 function capture() {
   const lines: string[] = [];

@@ -9,7 +9,7 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_USER: campusos
+      POSTGRES_USER: campusos_admin # bootstrap superuser (dev only); the app uses app_runtime
       POSTGRES_DB: campusos_dev
       # No default: compose refuses to start without a password from your local .env.
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (see setup-dev.sh)}
@@ -19,7 +19,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U campusos -d campusos_dev']
+      test: ['CMD-SHELL', 'pg_isready -U campusos_admin -d campusos_dev']
       interval: 5s
       timeout: 3s
       retries: 10

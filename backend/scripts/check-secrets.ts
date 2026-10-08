@@ -33,7 +33,7 @@ const RULES: { name: string; re: RegExp }[] = [
 ];
 
 const PLACEHOLDER =
-  /^(?:pass(?:word)?|secret|token|xxx+|\$\(.*|change[_-]?me|replace[_-]?me|your[_-].*|example.*|placeholder.*|<.*>|\$\{.*\}|\$[A-Z_]+|x{3,}|\*{3,}|\.{3}|\[redacted\])$/i;
+  /^(?:pass(?:word)?|secret|token|xxx+|\$\(.*|change[_-]?me[\w-]*|replace[_-]?me|your[_-].*|example.*|placeholder.*|<.*>|\$\{.*\}|\$[A-Z_]+|x{3,}|\*{3,}|\.{3}|\[redacted\])$/i;
 
 const BINARY_EXT = /\.(?:png|jpe?g|gif|ico|webp|pdf|woff2?|zip|gz|lock|tsbuildinfo)$/i;
 const SKIP_PATH = /^(?:pnpm-lock\.yaml|docs\/archive\/)/;
@@ -57,7 +57,7 @@ export function scanText(file: string, text: string): Finding[] {
       if (
         rule.name === 'assigned-secret' &&
         captured !== undefined &&
-        /^[A-Za-z_$][\w$]*(?:[.(]|$)/.test(captured) &&
+        /^[A-Za-z_$][\w$]*(?:[.(]|[;,)]*$)/.test(captured) &&
         !/\d{3,}/.test(captured)
       )
         continue;

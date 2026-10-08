@@ -4,7 +4,8 @@ import { loadConfig } from '../../src/config/env.js';
 import { AppError } from '../../src/shared/errors/http-errors.js';
 
 const config = loadConfig({ DATABASE_URL: 'postgresql://app:change_me@127.0.0.1:5432/db' });
-const db = { query: () => Promise.reject(new Error('db down')) } as never;
+// health source that reports the database as unreachable
+const db = { health: () => Promise.resolve({ ok: false as const }) };
 
 function app() {
   return buildApp({ config, db, logger: false });

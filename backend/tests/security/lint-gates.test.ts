@@ -43,4 +43,44 @@ describe('architecture lint gates (S-1)', () => {
     const ids = await ruleIds("console.log('x');\n", 'backend/src/modules/health/probe.ts');
     expect(ids).toContain('no-console');
   });
+
+  it('forbids application modules from reaching the pool or tx internals directly', async () => {
+    const pool = await ruleIds(
+      "import { createPool } from '../../shared/database/pool.js';\nexport const x = createPool;\n",
+      'backend/src/modules/health/probe.ts',
+    );
+    expect(pool).toContain('no-restricted-imports');
+    const tx = await ruleIds(
+      "import { openTenantTx } from '../../shared/database/tenant-tx.js';\nexport const x = openTenantTx;\n",
+      'backend/src/modules/health/probe.ts',
+    );
+    expect(tx).toContain('no-restricted-imports');
+  });
+
+  it('allows application modules to use the public database facade', async () => {
+    const ids = await ruleIds(
+      "import { Database } from '../../shared/database/index.js';\nexport const x = Database;\n",
+      'backend/src/modules/health/probe.ts',
+    );
+    expect(ids).not.toContain('no-restricted-imports');
+  });
+
+  it('forbids business modules from issuing a TrustedContext (only src/modules/iam may)', async () => {
+    const code =
+      "import { issueTrustedContext } from '../../shared/tenancy/issue-trusted-context.js';\nexport const x = issueTrustedContext;\n";
+    expect(await ruleIds(code, 'backend/src/modules/health/probe.ts')).toContain(
+      'no-restricted-imports',
+    );
+    expect(await ruleIds(code, 'backend/src/modules/iam/probe.ts')).not.toContain(
+      'no-restricted-imports',
+    );
+  });
+
+  it('forbids application code from importing migration / bootstrap tooling', async () => {
+    const ids = await ruleIds(
+      "import { migrate } from '../../../tools/db/migrate.js';\nexport const x = migrate;\n",
+      'backend/src/modules/health/probe.ts',
+    );
+    expect(ids).toContain('no-restricted-imports');
+  });
 });

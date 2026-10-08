@@ -20,7 +20,10 @@
     "check:secrets": "pnpm --filter @campusos/backend run check:secrets",
     "verify": "pnpm lint && pnpm format:check && pnpm typecheck && pnpm test && pnpm check:secrets",
     "dev": "pnpm --filter @campusos/backend run dev",
-    "dev:db": "pnpm --filter @campusos/backend run dev:db"
+    "dev:db": "pnpm --filter @campusos/backend run dev:db",
+    "test:security:db": "pnpm --filter @campusos/backend run test:security:db",
+    "db:bootstrap": "pnpm --filter @campusos/backend run db:bootstrap",
+    "db:migrate": "pnpm --filter @campusos/backend run db:migrate"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.0",

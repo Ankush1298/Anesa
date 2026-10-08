@@ -1,38 +1,64 @@
 import { randomBytes } from 'node:crypto';
 import pg from 'pg';
 import type { TestProject } from 'vitest/node';
+import { bootstrapDatabase } from '../../tools/db/bootstrap.js';
+import { migrate } from '../../tools/db/migrate.js';
 import { startThrowawayPostgres, type RunningPostgres } from './embedded-postgres.js';
+import { seedFixtures } from './fixtures.js';
+import { rolePasswords, urlFor } from './role-passwords.js';
 
 declare module 'vitest' {
   export interface ProvidedContext {
-    /** URL of a fresh, empty, isolated database for this test run. */
+    /** Superuser URL of a fresh, fully migrated and seeded database (Slice 0 tests use this). */
     dbUrl: string;
+    dbAdminUrl: string;
+    /** app_runtime: what the application uses. Subject to RLS. */
+    dbRuntimeUrl: string;
+    /** app_migrator: schema owner. Used only by migration tests. */
+    dbMigratorUrl: string;
+    /** Superuser URL to the server's maintenance DB, for tests that need extra databases. */
+    serverAdminUrl: string;
   }
 }
 
 /**
- * Provides each test project with its own empty database.
- *  - TEST_DATABASE_URL set (CI service container / docker compose): a superuser URL to an existing
- *    server; we create and later drop a uniquely named database on it.
- *  - otherwise: start a throw-away embedded PostgreSQL (no Docker needed).
+ * Provides each test project with its own database: created empty, bootstrapped (roles + schemas),
+ * migrated as app_migrator, and seeded with the deterministic security fixtures.
+ *  - TEST_DATABASE_URL set (CI service container, docker compose): superuser URL of an existing
+ *    PostgreSQL server; a uniquely named database is created and dropped.
+ *  - otherwise: a throw-away embedded PostgreSQL 16 server (real server binaries, no Docker needed).
  */
 export default async function setup(project: TestProject): Promise<() => Promise<void>> {
   const configured = process.env['TEST_DATABASE_URL'];
   let embedded: RunningPostgres | undefined;
-  const adminUrl = configured ?? (embedded = await startThrowawayPostgres()).adminUrl;
+  const serverAdminUrl = configured ?? (embedded = await startThrowawayPostgres()).adminUrl;
 
   const dbName = `campusos_test_${randomBytes(6).toString('hex')}`;
-  const admin = new pg.Client({ connectionString: adminUrl });
-  await admin.connect();
-  await admin.query(`CREATE DATABASE ${dbName}`);
-  await admin.end();
+  const maintenance = new pg.Client({ connectionString: serverAdminUrl });
+  await maintenance.connect();
+  await maintenance.query(`CREATE DATABASE ${dbName}`);
+  await maintenance.end();
 
-  const url = new URL(adminUrl);
-  url.pathname = `/${dbName}`;
-  project.provide('dbUrl', url.toString());
+  const adminUrl = urlFor(
+    serverAdminUrl,
+    new URL(serverAdminUrl).username,
+    decodeURIComponent(new URL(serverAdminUrl).password),
+    dbName,
+  );
+  const pw = rolePasswords();
+  await bootstrapDatabase({ adminUrl, runtimePassword: pw.runtime, migratorPassword: pw.migrator });
+  const migratorUrl = urlFor(serverAdminUrl, 'app_migrator', pw.migrator, dbName);
+  await migrate({ connectionString: migratorUrl });
+  await seedFixtures(adminUrl);
+
+  project.provide('dbUrl', adminUrl);
+  project.provide('dbAdminUrl', adminUrl);
+  project.provide('dbRuntimeUrl', urlFor(serverAdminUrl, 'app_runtime', pw.runtime, dbName));
+  project.provide('dbMigratorUrl', migratorUrl);
+  project.provide('serverAdminUrl', serverAdminUrl);
 
   return async () => {
-    const cleanup = new pg.Client({ connectionString: adminUrl });
+    const cleanup = new pg.Client({ connectionString: serverAdminUrl });
     await cleanup.connect();
     await cleanup.query(`DROP DATABASE IF EXISTS ${dbName} WITH (FORCE)`);
     await cleanup.end();

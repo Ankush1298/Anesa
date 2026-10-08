@@ -34,8 +34,8 @@ export type DatabaseStatus = { ok: true; serverVersion: string } | { ok: false }
 
 export async function checkDatabase(db: Queryable): Promise<DatabaseStatus> {
   try {
-    const res = await db.query<{ v: string }>('SHOW server_version');
-    return { ok: true, serverVersion: res.rows[0]?.v ?? 'unknown' };
+    const res = await db.query<{ server_version: string }>('SHOW server_version');
+    return { ok: true, serverVersion: res.rows[0]?.server_version ?? 'unknown' };
   } catch {
     return { ok: false };
   }

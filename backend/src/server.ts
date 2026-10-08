@@ -1,11 +1,11 @@
 import { buildApp } from './app.js';
 import { ConfigError, loadConfig } from './config/env.js';
-import { createPool } from './shared/database/pool.js';
+import { Database } from './shared/database/index.js';
 
 async function main(): Promise<void> {
   const config = loadConfig();
 
-  const pool = createPool({
+  const database = Database.connect({
     connectionString: config.database.url.reveal(),
     ssl: config.database.ssl,
     max: config.database.poolMax,
@@ -15,12 +15,15 @@ async function main(): Promise<void> {
     },
   });
 
-  const app = buildApp({ config, db: pool });
+  // Refuse to start unless DATABASE_URL is the least-privilege runtime role (never owner/superuser).
+  await database.verifyRuntimeRole();
+
+  const app = buildApp({ config, db: database });
 
   const shutdown = async (signal: string): Promise<void> => {
     app.log.info({ signal }, 'shutting down');
     await app.close();
-    await pool.end();
+    await database.close();
     process.exit(0);
   };
   process.once('SIGTERM', () => void shutdown('SIGTERM'));
