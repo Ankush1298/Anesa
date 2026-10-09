@@ -187,23 +187,53 @@ describe('role_assignments writers satisfy the typed-scope contract', () => {
     expect(seen).toBeGreaterThanOrEqual(7);
   });
 
-  it('the service keeps the documented lock order: campus before department, never a plan-dependent multi-row lock', () => {
+  it('the services keep the documented lock order: campus before department, never a plan-dependent multi-row lock', () => {
     const svc = stripTs(
       readFileSync(resolve(backend, 'src/shared/authorization/assignments.ts'), 'utf8'),
     );
     expect(svc).not.toMatch(/FOR SHARE OF/); // one locked row per statement
     expect(svc.indexOf('FROM app.campuses')).toBeGreaterThan(-1);
     expect(svc.indexOf('FROM app.campuses')).toBeLessThan(svc.lastIndexOf('FROM app.departments'));
+
+    const deptSvc = stripTs(
+      readFileSync(resolve(backend, 'src/modules/organization/department.service.ts'), 'utf8'),
+    );
+    expect(deptSvc).not.toMatch(/FOR SHARE OF/);
+    expect(deptSvc.indexOf('FROM app.campuses')).toBeGreaterThan(-1);
+    expect(deptSvc.indexOf('FROM app.campuses')).toBeLessThan(
+      deptSvc.indexOf('FROM app.departments'),
+    );
   });
 
-  it('the campus service never updates timezone and campuses are written only through it and the fixtures', () => {
-    const writers = code('src').filter((f) =>
+  it('the campus and department services are the only writers in src, and never update immutable columns', () => {
+    const campusWriters = code('src').filter((f) =>
       /\b(INSERT INTO|UPDATE)\s+app\.campuses\b/.test(f.text),
     );
-    expect(writers.map((f) => f.path)).toEqual(['src/modules/organization/campus.service.ts']);
-    expect(writers[0]?.text).not.toMatch(/UPDATE\s+app\.campuses/);
-    expect(
-      code('src').filter((f) => /\b(INSERT INTO|UPDATE)\s+app\.departments\b/.test(f.text)),
-    ).toEqual([]);
+    expect(campusWriters.map((f) => f.path)).toEqual([
+      'src/modules/organization/campus.service.ts',
+    ]);
+    expect(campusWriters[0]?.text).not.toMatch(/UPDATE\s+app\.campuses/);
+
+    const deptWriters = code('src').filter((f) =>
+      /\b(INSERT INTO|UPDATE)\s+app\.departments\b/.test(f.text),
+    );
+    expect(deptWriters.map((f) => f.path)).toEqual([
+      'src/modules/organization/department.service.ts',
+    ]);
+    for (const m of deptWriters[0]?.text.matchAll(
+      /UPDATE\s+app\.departments\s+SET\s+([\s\S]*?)\s+WHERE/g,
+    ) ?? []) {
+      const setClause = m[1] ?? '';
+      for (const col of [
+        'id',
+        'organization_id',
+        'campus_id',
+        'parent_department_id',
+        'code',
+        'kind',
+      ]) {
+        expect(setClause).not.toMatch(new RegExp(`\\b${col}\\s*=`, 'i'));
+      }
+    }
   });
 });
