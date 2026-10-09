@@ -59,8 +59,12 @@ describe('schema linter (S-2)', () => {
         WHERE table_schema = 'app' AND (column_name = 'id' OR column_name LIKE '%\\_id')`,
     );
     expect(rows.length).toBeGreaterThan(0);
+    // Documented exemption (0007): the request id is a random v4 UUID that must equal the one in the logs.
+    const RANDOM_UUID_COLUMNS = /^audit_events(_\d{4}_\d{2})?\.request_id$/;
     for (const r of rows) {
-      expect(r.domain_name, `${r.table_name}.${r.column_name}`).toBe('uuid_v7');
+      const name = `${r.table_name}.${r.column_name}`;
+      if (RANDOM_UUID_COLUMNS.test(name)) continue;
+      expect(r.domain_name, name).toBe('uuid_v7');
     }
   });
 
@@ -162,9 +166,11 @@ describe('schema linter (S-2)', () => {
   it('id and organization_id are protected by immutability triggers on every table', async () => {
     const rows = await adminQuery<{ relname: string }>(
       `SELECT c.relname FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid JOIN pg_namespace n ON n.oid = c.relnamespace
-        WHERE n.nspname = 'app' AND NOT t.tgisinternal AND t.tgname LIKE '%\\_immutable'`,
+        WHERE n.nspname = 'app' AND NOT t.tgisinternal AND t.tgname LIKE '%\\_immutable'
+          AND NOT c.relispartition`, // partition children inherit the parent's trigger; checked in audit-events.test.ts
     );
     expect(rows.map((r) => r.relname).sort()).toEqual([
+      'audit_events',
       'organizations',
       'role_assignments',
       'role_permissions',

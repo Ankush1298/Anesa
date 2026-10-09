@@ -42,6 +42,6 @@ Rules that hold for every decision:
 ## Known limits (carried to later slices)
 
 * `scope_id` has no foreign key: campuses/departments are not modelled yet.
-* No audit events, no `reason` capture, no MFA step-up for CRITICAL permissions, no `authz_version` cache key (audit subsystem and caching are out of scope for this slice).
+* Role grant/revoke are now audited with a mandatory reason (F1, `17-audit-foundation.md`). Still not implemented: auditing of any other operation, denial auditing, an audit viewer, MFA step-up for CRITICAL permissions and the `authz_version` cache key.
 * `role_grant_rules` is a code constant, not a tenant table.
 * `roles` / `role_permissions` are read-only for `app_runtime`; provisioning (seeding a tenant) is a platform operation (`seedTenantRoles`).

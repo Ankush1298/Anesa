@@ -95,7 +95,7 @@ describe('migrations are RLS-safe by construction (static pre-check of the SQL f
   const all = sql.map((s) => s.text).join('\n');
 
   it('every CREATE TABLE app.* is followed by ENABLE and FORCE ROW LEVEL SECURITY', () => {
-    const tables = [...all.matchAll(/CREATE TABLE app\.([a-z_]+)/g)].map((m) => m[1] as string);
+    const tables = [...all.matchAll(/CREATE TABLE app\.([a-z0-9_]+)/g)].map((m) => m[1] as string);
     expect(tables.length).toBeGreaterThan(0);
     for (const t of tables) {
       expect(all, `${t} ENABLE`).toMatch(
@@ -309,5 +309,50 @@ describe('authorization architecture guardrails (Slice 3)', () => {
       ...auth.matchAll(/app\.(post|put|patch|delete)\(\s*'([^']+)'[\s\S]*?public: true/g),
     ].map((m) => m[2]);
     expect(unsafePublic.sort()).toEqual(['/auth/login', '/auth/logout']);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// F1: audit foundation (ADR-008). Behaviour is proven in security-db/audit-events.test.ts and
+// integration/role-audit.test.ts; these are the static guardrails.
+// ---------------------------------------------------------------------------------------------
+describe('audit guardrails (F1)', () => {
+  const strip = (x: string): string => x.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+
+  it('only src/shared/audit touches the audit table (single writer)', () => {
+    const offenders = srcFiles.filter(
+      (f) => !f.path.startsWith('src/shared/audit/') && /audit_events/.test(strip(f.text)),
+    );
+    expect(offenders.map((f) => f.path)).toEqual([]);
+  });
+
+  it('role grant and revoke record an audit event through the helper, inside the same tx they were given', () => {
+    const text = strip(readFileSync(resolve(src, 'shared/authorization/assignments.ts'), 'utf8'));
+    expect(text).toMatch(/import \{[^}]*recordAudit[^}]*\} from '\.\.\/audit\/index\.js'/);
+    expect(text).toMatch(/recordAudit\(\s*tx,\s*ctx,\s*\{\s*action: 'role\.assignment\.grant'/);
+    expect(text).toMatch(/recordAudit\(\s*tx,\s*ctx,\s*\{\s*action: 'role\.assignment\.revoke'/);
+    expect(text).not.toMatch(/withTenant|withSystem/); // never opens its own transaction
+    expect(text).toMatch(/normaliseReason\(/);
+  });
+
+  it('the helper never writes occurred_at, never accepts a request body, and has no read path', () => {
+    const text = strip(readFileSync(resolve(src, 'shared/audit/record.ts'), 'utf8'));
+    expect(text).not.toMatch(/occurred_at/);
+    expect(text).not.toMatch(/\bSELECT\b|\bUPDATE\b|\bDELETE\b/);
+    expect(text).not.toMatch(/\bbody\b/);
+  });
+
+  it('migration 0007: no extension, no DEFAULT partition, no read/modify/truncate grant on audit rows', () => {
+    const sql = strip(
+      readFileSync(resolve(root, 'database/migrations/0007_audit_events.sql'), 'utf8').replace(
+        /--.*$/gm,
+        '',
+      ),
+    );
+    expect(sql).not.toMatch(/CREATE EXTENSION/i);
+    expect(sql).not.toMatch(/PARTITION OF[^;]*\bDEFAULT\b/i);
+    expect(sql).not.toMatch(/GRANT[^;]*\b(SELECT|UPDATE|DELETE|TRUNCATE|ALL)\b[^;]*audit_events/i);
+    expect(sql).toMatch(/PARTITION BY RANGE \(occurred_at\)/);
+    expect(sql).toMatch(/PRIMARY KEY \(id, occurred_at\)/);
   });
 });

@@ -15,3 +15,10 @@ Async logging; per-table history; central transactional log.
 
 ## Consequences
 Strong evidence with modest write overhead; partition maintenance needed; domain revisions (attendance, marks) complement but do not replace the audit log.
+
+## Amendment (2026-10-09): F1 implementation notes
+First implementation: `database/migrations/0007_audit_events.sql`, `backend/src/shared/audit`,
+`docs/architecture/v3/17-audit-foundation.md`. Monthly partitions are provisioned by migration with **no default
+partition** (an out-of-range insert fails the business transaction rather than being dropped or parked). The
+runtime role is INSERT-only on a column list (no SELECT) until the viewer exists. Retention remains a proposal
+pending legal confirmation.

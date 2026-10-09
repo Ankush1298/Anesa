@@ -246,6 +246,7 @@ describe('no accidental probe or debug objects', () => {
       'current_user_id',
       'enforce_immutable_keys',
       'get_identity_memberships',
+      'reject_audit_mutation',
       'role_assignments_guard',
       'touch_row',
     ]);

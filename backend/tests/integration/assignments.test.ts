@@ -47,6 +47,24 @@ async function scratch(
       if (!(e instanceof Rollback)) throw e;
     });
 }
+const REASON = 'Granted during the quarterly access review';
+const grantRole = (
+  tx: TenantTx,
+  ctx: TrustedContext,
+  targetUserId: string,
+  roleId: string,
+  scopeType: 'ORGANIZATION' | 'CAMPUS' | 'DEPARTMENT',
+  scopeId?: string,
+) =>
+  RoleAssignmentService.grant(tx, ctx, {
+    targetUserId,
+    roleId,
+    scopeType,
+    ...(scopeId === undefined ? {} : { scopeId }),
+    reason: REASON,
+  });
+const revokeRole = (tx: TenantTx, ctx: TrustedContext, assignmentId: string) =>
+  RoleAssignmentService.revoke(tx, ctx, assignmentId, REASON);
 const roleId = async (tx: TenantTx, code: string): Promise<string> =>
   (await tx.query<{ id: string }>('SELECT id FROM app.roles WHERE code = $1', [code])).rows[0]!.id;
 const status = (p: Promise<unknown>): Promise<number | undefined> =>
@@ -59,52 +77,34 @@ describe('RoleAssignmentService.grant / revoke', () => {
   it('COLLEGE_ADMIN grants, duplicates are 409, revoke works once, then 404', async () => {
     await scratch(CTX.staffA, async (tx, ctx) => {
       const faculty = await roleId(tx, 'FACULTY');
-      const id = await RoleAssignmentService.grant(tx, ctx, GRANTEE_A, faculty, 'ORGANIZATION');
-      expect(
-        await status(RoleAssignmentService.grant(tx, ctx, GRANTEE_A, faculty, 'ORGANIZATION')),
-      ).toBe(409);
+      const id = await grantRole(tx, ctx, GRANTEE_A, faculty, 'ORGANIZATION');
+      expect(await status(grantRole(tx, ctx, GRANTEE_A, faculty, 'ORGANIZATION'))).toBe(409);
       // the grant is effective immediately for the target (same transaction)
       const stored = await tx.query(
         'SELECT status, version FROM app.role_assignments WHERE id = $1',
         [id],
       );
       expect(stored.rows[0]).toMatchObject({ status: 'ACTIVE', version: 1 });
-      await RoleAssignmentService.revoke(tx, ctx, id);
+      await revokeRole(tx, ctx, id);
       const after = await tx.query(
         'SELECT status, version FROM app.role_assignments WHERE id = $1',
         [id],
       );
       expect(after.rows[0]).toMatchObject({ status: 'REVOKED', version: 2 });
-      expect(await status(RoleAssignmentService.revoke(tx, ctx, id))).toBe(404);
+      expect(await status(revokeRole(tx, ctx, id))).toBe(404);
     });
   });
 
   it('nobody can elevate themselves, and holders without the permission get 403', async () => {
     await scratch(CTX.staffA, async (tx, ctx) => {
       expect(
-        await status(
-          RoleAssignmentService.grant(
-            tx,
-            ctx,
-            STAFF_A,
-            await roleId(tx, 'FACULTY'),
-            'ORGANIZATION',
-          ),
-        ),
+        await status(grantRole(tx, ctx, STAFF_A, await roleId(tx, 'FACULTY'), 'ORGANIZATION')),
       ).toBe(403);
     });
     for (const actor of [CTX.studentA, CTX.noroleA, CTX.hodA, CTX.facultyA]) {
       await scratch(actor, async (tx, ctx) => {
         expect(
-          await status(
-            RoleAssignmentService.grant(
-              tx,
-              ctx,
-              GRANTEE_A,
-              await roleId(tx, 'STAFF'),
-              'ORGANIZATION',
-            ),
-          ),
+          await status(grantRole(tx, ctx, GRANTEE_A, await roleId(tx, 'STAFF'), 'ORGANIZATION')),
           actor.user,
         ).toBe(403);
       });
@@ -114,7 +114,7 @@ describe('RoleAssignmentService.grant / revoke', () => {
   it('grant rules and scope containment bound a CAMPUS_ADMIN (06 §5)', async () => {
     await scratch(CTX.campusAdminA, async (tx, ctx) => {
       const g = (role: string, type: 'ORGANIZATION' | 'CAMPUS' | 'DEPARTMENT', sid?: string) =>
-        status(RoleAssignmentService.grant(tx, ctx, GRANTEE_A, role, type, sid));
+        status(grantRole(tx, ctx, GRANTEE_A, role, type, sid));
       const staff = await roleId(tx, 'STAFF');
       expect(await g(staff, 'CAMPUS', CAMPUS_1)).toBe(200); // inside own campus, allowed role
       expect(await g(staff, 'CAMPUS', CAMPUS_2)).toBe(403); // another campus
@@ -134,7 +134,7 @@ describe('RoleAssignmentService.grant / revoke', () => {
           [STAFF_A],
         )
       ).rows[0]!.id;
-      expect(await status(RoleAssignmentService.revoke(tx, ctx, adminAssignment))).toBe(403);
+      expect(await status(revokeRole(tx, ctx, adminAssignment))).toBe(403);
     });
   });
 
@@ -145,7 +145,7 @@ describe('RoleAssignmentService.grant / revoke', () => {
           STAFF_A,
         ])
       ).rows[0]!.id;
-      expect(await status(RoleAssignmentService.revoke(tx, ctx, own))).toBe(403);
+      expect(await status(revokeRole(tx, ctx, own))).toBe(403);
     });
   });
 
@@ -158,33 +158,21 @@ describe('RoleAssignmentService.grant / revoke', () => {
     )[0]!.id;
     await scratch(CTX.staffA, async (tx, ctx) => {
       const staff = await roleId(tx, 'STAFF');
-      expect(
-        await status(RoleAssignmentService.grant(tx, ctx, GRANTEE_A, roleB, 'ORGANIZATION')),
-      ).toBe(404); // foreign role
-      expect(
-        await status(RoleAssignmentService.grant(tx, ctx, USER_B, staff, 'ORGANIZATION')),
-      ).toBe(404); // foreign user
+      expect(await status(grantRole(tx, ctx, GRANTEE_A, roleB, 'ORGANIZATION'))).toBe(404); // foreign role
+      expect(await status(grantRole(tx, ctx, USER_B, staff, 'ORGANIZATION'))).toBe(404); // foreign user
       expect(
         await status(
-          RoleAssignmentService.grant(
-            tx,
-            ctx,
-            '01939a00-0000-7000-8000-00000000ffff',
-            staff,
-            'ORGANIZATION',
-          ),
+          grantRole(tx, ctx, '01939a00-0000-7000-8000-00000000ffff', staff, 'ORGANIZATION'),
         ),
       ).toBe(404);
-      expect(
-        await status(RoleAssignmentService.revoke(tx, ctx, '01939a00-0000-7000-8000-00000000ffff')),
-      ).toBe(404);
+      expect(await status(revokeRole(tx, ctx, '01939a00-0000-7000-8000-00000000ffff'))).toBe(404);
     });
   });
 
   it('scope type and scope id must be coherent and valid for the role', async () => {
     await scratch(CTX.staffA, async (tx, ctx) => {
       const g = (role: string, type: 'ORGANIZATION' | 'CAMPUS' | 'DEPARTMENT', sid?: string) =>
-        status(RoleAssignmentService.grant(tx, ctx, GRANTEE_A, role, type, sid));
+        status(grantRole(tx, ctx, GRANTEE_A, role, type, sid));
       expect(await g(await roleId(tx, 'HOD'), 'ORGANIZATION')).toBe(400); // HOD requires DEPARTMENT
       expect(await g(await roleId(tx, 'COLLEGE_ADMIN'), 'DEPARTMENT', DEPT_1)).toBe(400);
       expect(await g(await roleId(tx, 'HOD'), 'DEPARTMENT')).toBe(400); // missing id
@@ -196,14 +184,7 @@ describe('RoleAssignmentService.grant / revoke', () => {
 
   it('a granted assignment is effective for the target and a revoked one is not', async () => {
     await scratch(CTX.staffA, async (tx, ctx) => {
-      const id = await RoleAssignmentService.grant(
-        tx,
-        ctx,
-        GRANTEE_A,
-        await roleId(tx, 'HOD'),
-        'DEPARTMENT',
-        DEPT_1,
-      );
+      const id = await grantRole(tx, ctx, GRANTEE_A, await roleId(tx, 'HOD'), 'DEPARTMENT', DEPT_1);
       const target = issueTrustedContext({
         tenantId: ORG_A,
         userId: GRANTEE_A,
@@ -213,7 +194,7 @@ describe('RoleAssignmentService.grant / revoke', () => {
       expect(await AuthorizationEngine.hasPermission(tx, target, 'student.profile.read')).toBe(
         true,
       );
-      await RoleAssignmentService.revoke(tx, ctx, id);
+      await revokeRole(tx, ctx, id);
       expect(await AuthorizationEngine.hasPermission(tx, target, 'student.profile.read')).toBe(
         false,
       );

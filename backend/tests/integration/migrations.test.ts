@@ -5,8 +5,13 @@ import { join } from 'node:path';
 import pg from 'pg';
 import { afterAll, describe, expect, inject, it } from 'vitest';
 import { bootstrapDatabase } from '../../tools/db/bootstrap.js';
+import type { AppError } from '../../src/shared/errors/http-errors.js';
+import { RoleAssignmentService } from '../../src/shared/authorization/assignments.js';
+import { Database } from '../../src/shared/database/index.js';
+import { createPool } from '../../src/shared/database/pool.js';
+import { issueTrustedContext } from '../../src/shared/tenancy/issue-trusted-context.js';
 import { DEFAULT_MIGRATIONS_DIR, loadMigrations, migrate } from '../../tools/db/migrate.js';
-import { CTX, ORG_A, STUDENT_A } from '../support/fixtures.js';
+import { CTX, ORG_A, ORG_C, STAFF_C, STUDENT_A } from '../support/fixtures.js';
 import { seedFixtures } from '../support/fixtures.js';
 import { urlFor } from '../support/role-passwords.js';
 
@@ -93,24 +98,40 @@ async function fingerprint(adminUrl: string): Promise<string> {
 describe('migrations from a clean database', () => {
   it('migration files are ordered, contiguous and checksummed', () => {
     const m = loadMigrations();
-    expect(m.map((x) => x.version)).toEqual(['0001', '0002', '0003', '0004', '0005', '0006']);
+    expect(m.map((x) => x.version)).toEqual([
+      '0001',
+      '0002',
+      '0003',
+      '0004',
+      '0005',
+      '0006',
+      '0007',
+    ]);
     expect(m.every((x) => /^[0-9a-f]{64}$/.test(x.checksum))).toBe(true);
   });
 
   it('applies everything on an empty database, records checksums and is a no-op the second time', async () => {
     const db = await freshDatabase();
     const first = await migrate({ connectionString: db.migrator });
-    expect(first.applied).toEqual(['0001', '0002', '0003', '0004', '0005', '0006']);
+    expect(first.applied).toEqual(['0001', '0002', '0003', '0004', '0005', '0006', '0007']);
     const ledger = await one<{ version: string; checksum: string; applied_by: string }>(
       db.admin,
       'SELECT version, checksum, applied_by FROM platform.schema_migrations ORDER BY version',
     );
-    expect(ledger.map((l) => l.version)).toEqual(['0001', '0002', '0003', '0004', '0005', '0006']);
+    expect(ledger.map((l) => l.version)).toEqual([
+      '0001',
+      '0002',
+      '0003',
+      '0004',
+      '0005',
+      '0006',
+      '0007',
+    ]);
     expect(new Set(ledger.map((l) => l.applied_by))).toEqual(new Set(['app_migrator']));
     expect(ledger.map((l) => l.checksum.trim())).toEqual(loadMigrations().map((m) => m.checksum));
     const second = await migrate({ connectionString: db.migrator });
     expect(second.applied).toEqual([]);
-    expect(second.alreadyApplied).toEqual(['0001', '0002', '0003', '0004', '0005', '0006']);
+    expect(second.alreadyApplied).toEqual(['0001', '0002', '0003', '0004', '0005', '0006', '0007']);
   });
 
   it('refuses to run as anyone but app_migrator (so objects can never be owned by the wrong role)', async () => {
@@ -137,7 +158,7 @@ describe('migrations from a clean database', () => {
     const db = await freshDatabase();
     await migrate({ connectionString: db.migrator });
     const dir = mkdtempSync(join(tmpdir(), 'campusos-mig-'));
-    for (const f of readdirSync(DEFAULT_MIGRATIONS_DIR).filter((x) => !x.startsWith('0006'))) {
+    for (const f of readdirSync(DEFAULT_MIGRATIONS_DIR).filter((x) => !x.startsWith('0007'))) {
       cpSync(join(DEFAULT_MIGRATIONS_DIR, f), join(dir, f));
     }
     await expect(migrate({ connectionString: db.migrator, dir })).rejects.toThrow(
@@ -199,7 +220,7 @@ describe('migrations from a clean database', () => {
     created.splice(created.indexOf(db.name), 1);
     const again = await freshDatabase();
     const result = await migrate({ connectionString: again.migrator });
-    expect(result.applied).toEqual(['0001', '0002', '0003', '0004', '0005', '0006']);
+    expect(result.applied).toEqual(['0001', '0002', '0003', '0004', '0005', '0006', '0007']);
     expect(await fingerprint(again.admin)).toBe(schemaBefore);
     await seedFixtures(again.admin); // seeds cleanly into the re-created schema
   });
@@ -213,5 +234,79 @@ describe('migrations from a clean database', () => {
       'SELECT count(*)::text AS n FROM app.students',
     );
     expect(asOwner).toEqual([{ n: '0' }]);
+  });
+});
+
+describe('audit partitions fail closed end-to-end (migration 0007)', () => {
+  // Lives in this file on purpose: freshDatabase() bootstraps cluster-wide roles, which must never run
+  // concurrently from two test files ("tuple concurrently updated").
+  const REASON = 'Joined the physics department as a lecturer';
+  const TARGET = '01939a00-0000-7000-8000-00000000cc14';
+  const ctxC = issueTrustedContext({ tenantId: ORG_C, userId: STAFF_C, actorKind: 'STAFF' });
+
+  it('with no partition for the current month the audit insert fails, the grant is NOT committed and no row is stored; once the partition exists the same grant succeeds', async () => {
+    const db = await freshDatabase();
+    await migrate({ connectionString: db.migrator });
+    await seedFixtures(db.admin);
+    const fresh = new Database(createPool({ connectionString: db.runtime, ssl: false, max: 2 }));
+    try {
+      await one(
+        db.admin,
+        `INSERT INTO platform.identities (id, email, password_hash, status) VALUES ($1, 'target.c@college-c.test', 'x', 'ACTIVE')`,
+        [TARGET],
+      );
+      await one(
+        db.admin,
+        `INSERT INTO app.users (id, organization_id, email, display_name, status, identity_id) VALUES ($1, $2, 'target.c@college-c.test', 'Target C', 'ACTIVE', $1)`,
+        [TARGET, ORG_C],
+      );
+      const [months] = await one<{ ym: string; start: string; next: string }>(
+        db.admin,
+        `SELECT to_char(now() AT TIME ZONE 'UTC', 'YYYY_MM') AS ym,
+                to_char(date_trunc('month', now() AT TIME ZONE 'UTC'), 'YYYY-MM-DD') AS start,
+                to_char(date_trunc('month', now() AT TIME ZONE 'UTC') + interval '1 month', 'YYYY-MM-DD') AS next`,
+      );
+      const { ym, start, next } = months!;
+      await one(db.admin, `DROP TABLE app.audit_events_${ym}`); // simulate "the provisioned months ran out"
+
+      const grant = (): Promise<string> =>
+        fresh.withTenant(ctxC, async (tx) => {
+          const role = await tx.query<{ id: string }>(
+            "SELECT id FROM app.roles WHERE code = 'FACULTY'",
+          );
+          return RoleAssignmentService.grant(tx, ctxC, {
+            targetUserId: TARGET,
+            roleId: role.rows[0]!.id,
+            scopeType: 'ORGANIZATION',
+            reason: REASON,
+          });
+        });
+
+      const e = (await grant().then(
+        () => undefined,
+        (x: unknown) => x,
+      )) as AppError;
+      expect(e).toMatchObject({ statusCode: 500, code: 'AUDIT_WRITE_FAILED' });
+      expect(e.message).not.toMatch(/partition/i); // no database detail leaks to callers
+      expect(
+        await one(db.admin, 'SELECT 1 FROM app.role_assignments WHERE user_id = $1', [TARGET]),
+      ).toEqual([]);
+      expect(await one(db.admin, 'SELECT 1 FROM app.audit_events')).toEqual([]);
+
+      // an operator provisions the month (a new migration in production); the very same call now commits both rows
+      await one(
+        db.admin,
+        `CREATE TABLE app.audit_events_${ym} PARTITION OF app.audit_events FOR VALUES FROM ('${start} 00:00:00+00') TO ('${next} 00:00:00+00')`,
+      );
+      const id = await grant();
+      expect(
+        await one(db.admin, 'SELECT status FROM app.role_assignments WHERE id = $1', [id]),
+      ).toHaveLength(1);
+      expect(
+        await one(db.admin, 'SELECT 1 FROM app.audit_events WHERE resource_id = $1', [id]),
+      ).toHaveLength(1);
+    } finally {
+      await fresh.close();
+    }
   });
 });

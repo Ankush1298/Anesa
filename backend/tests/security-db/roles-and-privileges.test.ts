@@ -9,6 +9,7 @@ import {
 } from '../support/db-harness.js';
 
 const APP_TABLES = [
+  'audit_events',
   'organizations',
   'role_assignments',
   'role_permissions',
@@ -171,8 +172,9 @@ describe('ownership trap: FORCE ROW LEVEL SECURITY (Invariant E)', () => {
       relforcerowsecurity: boolean;
     }>(
       `SELECT c.relname, c.relrowsecurity, c.relforcerowsecurity FROM pg_class c
-         JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'app' AND c.relkind = 'r' ORDER BY 1`,
+         JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'app' AND c.relkind IN ('r', 'p') AND NOT c.relispartition ORDER BY 1`,
     );
+    // partitions are covered one by one in security-db/audit-events.test.ts
     expect(rows.map((r) => r.relname)).toEqual([...APP_TABLES].sort());
     for (const r of rows) {
       expect(r.relrowsecurity, `${r.relname} RLS`).toBe(true);
