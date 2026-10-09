@@ -55,12 +55,15 @@ const EXTRA_A_USERS: [string, string][] = [
   [GRANTEE_A, 'grantee.a@college-a.test'],
 ];
 
-/** Scope identifiers. No campus/department tables exist yet; these are opaque, trusted scope ids. */
+/** Scope identifiers: real rows in app.campuses / app.departments (tenant A), created by seedFixtures. */
 export const CAMPUS_1 = '01939a00-0000-7000-8000-00000000ca01';
 export const CAMPUS_2 = '01939a00-0000-7000-8000-00000000ca02';
 export const DEPT_1 = '01939a00-0000-7000-8000-00000000de01'; // in CAMPUS_1
 export const DEPT_2 = '01939a00-0000-7000-8000-00000000de02'; // in CAMPUS_1
 export const DEPT_3 = '01939a00-0000-7000-8000-00000000de03'; // in CAMPUS_2
+/** A campus/department of tenant B: valid ids that tenant A must never be able to scope a role to. */
+export const CAMPUS_B1 = '01939a00-0000-7000-8000-00000000cb01';
+export const DEPT_B1 = '01939a00-0000-7000-8000-00000000db01'; // in CAMPUS_B1
 
 /** Tenant C exists only for tests that COMMIT writes, so they cannot disturb the A/B assertions. */
 export const ORG_C = '01939a00-0000-7000-8000-000000000c01';
@@ -167,6 +170,23 @@ export async function seedFixtures(adminUrl: string): Promise<void> {
     };
     for (const org of [ORG_A, ORG_B, ORG_C]) await seedTenantRoles(exec, org);
 
+    // Academic structure first: scoped role assignments below reference these rows (typed FKs, 0008/0009).
+    await c.query(
+      `INSERT INTO app.campuses (id, organization_id, name, code, timezone) VALUES
+         ($1, $4, 'Campus 1', 'C1', 'Asia/Kolkata'),
+         ($2, $4, 'Campus 2', 'C2', 'Asia/Kolkata'),
+         ($3, $5, 'Campus B1', 'CB1', 'Asia/Kolkata')`,
+      [CAMPUS_1, CAMPUS_2, CAMPUS_B1, ORG_A, ORG_B],
+    );
+    await c.query(
+      `INSERT INTO app.departments (id, organization_id, campus_id, name, code) VALUES
+         ($1, $5, $4, 'Department 1', 'D1'),
+         ($2, $5, $4, 'Department 2', 'D2'),
+         ($3, $5, $6, 'Department 3', 'D3'),
+         ($7, $8, $9, 'Department B1', 'DB1')`,
+      [DEPT_1, DEPT_2, DEPT_3, CAMPUS_1, ORG_A, CAMPUS_2, DEPT_B1, ORG_B, CAMPUS_B1],
+    );
+
     const assign = async (
       org: string,
       user: string,
@@ -176,8 +196,10 @@ export async function seedFixtures(adminUrl: string): Promise<void> {
       n: number,
     ): Promise<void> => {
       await c.query(
-        `INSERT INTO app.role_assignments (id, organization_id, user_id, role_id, scope_type, scope_id)
-         SELECT $1::uuid, $2::uuid, $3::uuid, r.id, $5, $6::uuid FROM app.roles r WHERE r.organization_id = $2::uuid AND r.code = $4`,
+        `INSERT INTO app.role_assignments (id, organization_id, user_id, role_id, scope_type, scope_id, campus_id, department_id)
+         SELECT $1::uuid, $2::uuid, $3::uuid, r.id, $5::text, $6::uuid,
+                CASE WHEN $5::text = 'CAMPUS' THEN $6::uuid END, CASE WHEN $5::text = 'DEPARTMENT' THEN $6::uuid END
+           FROM app.roles r WHERE r.organization_id = $2::uuid AND r.code = $4`,
         [
           `01939a00-0000-7000-8000-00000000d${String(n).padStart(3, '0')}`,
           org,

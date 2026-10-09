@@ -66,6 +66,55 @@ export class RoleAssignmentService {
   }
 
   /**
+   * Proves the target campus/department is grantable AND keeps it so until this transaction ends.
+   *
+   * LOCK ORDER (the convention every writer of campuses/departments must follow): campus first, then
+   * department, one row per statement. Plain `FOR SHARE` rows block a concurrent status/soft-delete UPDATE
+   * (which takes FOR NO KEY UPDATE) until the grant commits, so a deactivation cannot land between this check
+   * and the INSERT. The foreign keys of the INSERT do NOT provide that protection: they take FOR KEY SHARE,
+   * which a non-key UPDATE does not conflict with. Under READ COMMITTED a row changed by a transaction that
+   * committed while we waited is re-checked against the WHERE clause, so a deactivation that wins is seen.
+   * Two grants only ever share-lock, so they cannot deadlock each other; a deactivation that follows the
+   * same order (campus before department) cannot form a cycle with a grant either.
+   */
+  private static async lockGrantableScope(
+    tx: TenantTx,
+    tenantId: string,
+    scopeType: ScopeType,
+    scopeId: string | undefined,
+  ): Promise<void> {
+    if (scopeType === 'ORGANIZATION') return;
+    let campusId = scopeId;
+    if (scopeType === 'DEPARTMENT') {
+      // campus_id of a department is immutable (no UPDATE grant), so reading it unlocked is safe.
+      const dept = await tx.query<{ campus_id: string }>(
+        `SELECT campus_id FROM app.departments
+          WHERE organization_id = $1 AND id = $2 AND deleted_at IS NULL AND status = 'ACTIVE'`,
+        [tenantId, scopeId],
+      );
+      campusId = dept.rows[0]?.campus_id;
+      if (!campusId) throw resourceNotFound();
+    }
+    const campus = await tx.query(
+      `SELECT 1 FROM app.campuses
+        WHERE organization_id = $1 AND id = $2 AND status = 'ACTIVE'
+          FOR SHARE`,
+      [tenantId, campusId],
+    );
+    if (campus.rowCount === 0) throw resourceNotFound();
+    if (scopeType === 'DEPARTMENT') {
+      // Second lock, re-checking the state the unlocked read saw.
+      const dept = await tx.query(
+        `SELECT 1 FROM app.departments
+          WHERE organization_id = $1 AND id = $2 AND deleted_at IS NULL AND status = 'ACTIVE'
+            FOR SHARE`,
+        [tenantId, scopeId],
+      );
+      if (dept.rowCount === 0) throw resourceNotFound();
+    }
+  }
+
+  /**
    * Grants a role. The assignment row and its audit event are written in the CALLER'S tenant
    * transaction (`tx`): they commit or roll back together, and an audit failure fails the grant.
    */
@@ -106,6 +155,11 @@ export class RoleAssignmentService {
     }
     await this.assertMayManage(tx, ctx, 'role.assignment.grant', roleCode, scope);
 
+    // Checked only AFTER the grantor is authorised for this scope, so an unauthorised caller cannot use the
+    // response to learn which campus/department ids exist. Unknown, other-tenant, INACTIVE, soft-deleted
+    // scopes (and a department under an INACTIVE campus) are the same 404 as an unknown role or user.
+    await this.lockGrantableScope(tx, ctx.tenantId, scopeType, scopeId);
+
     const existing = await tx.query(
       `SELECT 1 FROM app.role_assignments
         WHERE organization_id = $1 AND user_id = $2 AND role_id = $3 AND status = 'ACTIVE'
@@ -118,10 +172,21 @@ export class RoleAssignmentService {
     }
 
     const id = uuidv7();
+    // scope_id stays the engine's source of truth; the typed column that matches the scope type is
+    // written with the same value (the others stay NULL) so the 0009 integrity check holds.
     await tx.query(
-      `INSERT INTO app.role_assignments (id, organization_id, user_id, role_id, scope_type, scope_id)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [id, ctx.tenantId, targetUserId, roleId, scopeType, scopeId ?? null],
+      `INSERT INTO app.role_assignments (id, organization_id, user_id, role_id, scope_type, scope_id, campus_id, department_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [
+        id,
+        ctx.tenantId,
+        targetUserId,
+        roleId,
+        scopeType,
+        scopeId ?? null,
+        scopeType === 'CAMPUS' ? scopeId : null,
+        scopeType === 'DEPARTMENT' ? scopeId : null,
+      ],
     );
     await recordAudit(
       tx,

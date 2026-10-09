@@ -559,8 +559,10 @@ describe('assignment validity (revoked / expired / future / multiple roles)', ()
     const id = `01939a00-0000-7000-8000-00000000e${String(++n).padStart(3, '0')}`;
     inserted.push(id);
     await adminQuery(
-      `INSERT INTO app.role_assignments (id, organization_id, user_id, role_id, scope_type, scope_id, status, valid_from, valid_until)
-       SELECT $1::uuid, $2::uuid, $3::uuid, r.id, $4, $5::uuid, $6, ${o.from ?? 'now()'}, ${o.until === undefined || o.until === null ? 'NULL' : o.until}
+      `INSERT INTO app.role_assignments (id, organization_id, user_id, role_id, scope_type, scope_id, campus_id, department_id, status, valid_from, valid_until)
+       SELECT $1::uuid, $2::uuid, $3::uuid, r.id, $4::text, $5::uuid,
+              CASE WHEN $4::text = 'CAMPUS' THEN $5::uuid END, CASE WHEN $4::text = 'DEPARTMENT' THEN $5::uuid END,
+              $6, ${o.from ?? 'now()'}, ${o.until === undefined || o.until === null ? 'NULL' : o.until}
          FROM app.roles r WHERE r.organization_id = $2::uuid AND r.code = $7`,
       [id, ORG_A, TEMP_A, scopeType, scopeId, o.status ?? 'ACTIVE', role],
     );

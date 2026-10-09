@@ -15,3 +15,12 @@ Prisma/other ORMs; UUIDv4; native enums; Postgres 18 uuidv7().
 
 ## Consequences
 Predictable SQL and index locality; hand-written SQL for RLS/exclusion helpers; ID generation lives in one package.
+
+## Amendment (2026-10-10): the expand/contract gate is enforced by the migration runner
+"expand/migrate/contract" is no longer only a convention. A migration whose file name ends in `_contract`
+(e.g. `0009_role_scope_integrity_contract.sql`) is a **contract migration**: `tools/db/migrate.ts` never runs it in an
+ordinary invocation. The run applies everything before it, stops at the first contract migration, applies nothing
+after it (later migrations may depend on it) and reports it as deferred. It runs only when the operator names its
+exact version (`pnpm db:migrate --allow-contract 0009`); there is no environment variable and no wildcard, and
+`pnpm dev:db` never authorises one. Disposable test databases opt in explicitly. Details and the release order:
+`docs/architecture/v3/18-academic-structure-f21.md`.

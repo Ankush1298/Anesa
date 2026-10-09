@@ -7,8 +7,13 @@ import { adminQuery } from '../support/db-harness.js';
 import {
   CAMPUS_1,
   CAMPUS_2,
+  CAMPUS_B1,
   CTX,
   DEPT_1,
+  DEPT_2,
+  DEPT_3,
+  DEPT_B1,
+  UNKNOWN_V7,
   ORG_A,
   ORG_B,
   STAFF_A,
@@ -179,6 +184,103 @@ describe('RoleAssignmentService.grant / revoke', () => {
       expect(await g(await roleId(tx, 'HOD'), 'DEPARTMENT', 'not-a-uuid')).toBe(400);
       expect(await g(await roleId(tx, 'STAFF'), 'ORGANIZATION', DEPT_1)).toBe(400); // org scope takes no id
       expect(await g(await roleId(tx, 'HOD'), 'DEPARTMENT', DEPT_1)).toBe(200);
+    });
+  });
+
+  it('scoped grants write scope_id AND the matching typed column, nothing else', async () => {
+    await scratch(CTX.staffA, async (tx, ctx) => {
+      const typed = async (id: string) =>
+        (
+          await tx.query(
+            'SELECT scope_type, scope_id, campus_id, department_id FROM app.role_assignments WHERE id = $1',
+            [id],
+          )
+        ).rows[0];
+      const staff = await roleId(tx, 'STAFF');
+      const org = await grantRole(tx, ctx, GRANTEE_A, staff, 'ORGANIZATION');
+      expect(await typed(org)).toEqual({
+        scope_type: 'ORGANIZATION',
+        scope_id: null,
+        campus_id: null,
+        department_id: null,
+      });
+      const campus = await grantRole(tx, ctx, GRANTEE_A, staff, 'CAMPUS', CAMPUS_1);
+      expect(await typed(campus)).toEqual({
+        scope_type: 'CAMPUS',
+        scope_id: CAMPUS_1,
+        campus_id: CAMPUS_1,
+        department_id: null,
+      });
+      const dept = await grantRole(
+        tx,
+        ctx,
+        GRANTEE_A,
+        await roleId(tx, 'HOD'),
+        'DEPARTMENT',
+        DEPT_1,
+      );
+      expect(await typed(dept)).toEqual({
+        scope_type: 'DEPARTMENT',
+        scope_id: DEPT_1,
+        campus_id: null,
+        department_id: DEPT_1,
+      });
+    });
+  });
+
+  it('an unknown, other-tenant or deleted campus/department is the same safe 404, not a database error', async () => {
+    await scratch(CTX.staffA, async (tx, ctx) => {
+      const g = (role: string, type: 'CAMPUS' | 'DEPARTMENT', sid: string) =>
+        status(grantRole(tx, ctx, GRANTEE_A, role, type, sid));
+      const staff = await roleId(tx, 'STAFF');
+      const hod = await roleId(tx, 'HOD');
+      expect(await g(staff, 'CAMPUS', UNKNOWN_V7)).toBe(404);
+      expect(await g(staff, 'CAMPUS', CAMPUS_B1)).toBe(404); // exists, but in tenant B
+      expect(await g(hod, 'DEPARTMENT', UNKNOWN_V7)).toBe(404);
+      expect(await g(hod, 'DEPARTMENT', DEPT_B1)).toBe(404);
+      expect(await g(hod, 'DEPARTMENT', CAMPUS_1)).toBe(404); // a campus id is not a department id
+      expect(await g(staff, 'CAMPUS', DEPT_1)).toBe(404); // a department id is not a campus id
+      // a soft-deleted department is gone as far as new grants are concerned
+      await tx.query('UPDATE app.departments SET deleted_at = now() WHERE id = $1', [DEPT_1]);
+      expect(await g(hod, 'DEPARTMENT', DEPT_1)).toBe(404);
+    });
+  });
+
+  it('new grants to inactive scopes are the same 404; existing assignments and revoke are unaffected', async () => {
+    await scratch(CTX.staffA, async (tx, ctx) => {
+      const g = (role: string, type: 'CAMPUS' | 'DEPARTMENT', sid: string) =>
+        status(grantRole(tx, ctx, GRANTEE_A, role, type, sid));
+      const staff = await roleId(tx, 'STAFF');
+      const hod = await roleId(tx, 'HOD');
+      // granted while active, then the scopes are deactivated
+      const onCampus = await grantRole(tx, ctx, GRANTEE_A, staff, 'CAMPUS', CAMPUS_2);
+      const onDept = await grantRole(tx, ctx, GRANTEE_A, hod, 'DEPARTMENT', DEPT_3);
+
+      await tx.query(`UPDATE app.departments SET status = 'INACTIVE' WHERE id = $1`, [DEPT_2]);
+      expect(await g(hod, 'DEPARTMENT', DEPT_2)).toBe(404); // inactive department
+      expect(await g(hod, 'DEPARTMENT', DEPT_1)).toBe(200); // sibling in the same campus is fine
+
+      await tx.query(`UPDATE app.campuses SET status = 'INACTIVE' WHERE id = $1`, [CAMPUS_2]);
+      expect(await g(staff, 'CAMPUS', CAMPUS_2)).toBe(404); // inactive campus
+      expect(await g(hod, 'DEPARTMENT', DEPT_3)).toBe(404); // ACTIVE department under an inactive campus
+
+      const stored = await tx.query<{ id: string; status: string }>(
+        'SELECT id, status FROM app.role_assignments WHERE id = ANY($1::uuid[])',
+        [[onCampus, onDept]],
+      );
+      expect(stored.rows.map((r) => r.status)).toEqual(['ACTIVE', 'ACTIVE']);
+      await revokeRole(tx, ctx, onCampus); // revoke still works on an inactive scope
+      await revokeRole(tx, ctx, onDept);
+    });
+  });
+
+  it('scope existence is not revealed to a grantor who may not manage that scope', async () => {
+    await scratch(CTX.campusAdminA, async (tx, ctx) => {
+      const staff = await roleId(tx, 'STAFF');
+      // outside the admin's campus: 403 whether the campus exists (CAMPUS_2, CAMPUS_B1) or not
+      for (const id of [CAMPUS_2, CAMPUS_B1, UNKNOWN_V7]) {
+        expect(await status(grantRole(tx, ctx, GRANTEE_A, staff, 'CAMPUS', id)), id).toBe(403);
+      }
     });
   });
 

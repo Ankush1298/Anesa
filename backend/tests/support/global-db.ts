@@ -1,8 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import pg from 'pg';
 import type { TestProject } from 'vitest/node';
-import { bootstrapDatabase } from '../../tools/db/bootstrap.js';
-import { migrate } from '../../tools/db/migrate.js';
+import { createBootstrappedDatabase } from './bootstrap-lock.js';
+import { contractVersions, migrate } from '../../tools/db/migrate.js';
 import { startThrowawayPostgres, type RunningPostgres } from './embedded-postgres.js';
 import { seedFixtures } from './fixtures.js';
 import { rolePasswords, urlFor } from './role-passwords.js';
@@ -34,21 +34,14 @@ export default async function setup(project: TestProject): Promise<() => Promise
   const serverAdminUrl = configured ?? (embedded = await startThrowawayPostgres()).adminUrl;
 
   const dbName = `campusos_test_${randomBytes(6).toString('hex')}`;
-  const maintenance = new pg.Client({ connectionString: serverAdminUrl });
-  await maintenance.connect();
-  await maintenance.query(`CREATE DATABASE ${dbName}`);
-  await maintenance.end();
-
-  const adminUrl = urlFor(
-    serverAdminUrl,
-    new URL(serverAdminUrl).username,
-    decodeURIComponent(new URL(serverAdminUrl).password),
-    dbName,
-  );
   const pw = rolePasswords();
-  await bootstrapDatabase({ adminUrl, runtimePassword: pw.runtime, migratorPassword: pw.migrator });
+  // CREATE DATABASE + role/schema bootstrap under the cluster-wide lock: another test process (or project) may be
+  // bootstrapping the same server at this moment.
+  const adminUrl = await createBootstrappedDatabase(serverAdminUrl, dbName, pw);
   const migratorUrl = urlFor(serverAdminUrl, 'app_migrator', pw.migrator, dbName);
-  await migrate({ connectionString: migratorUrl });
+  // Disposable test database: contract migrations are authorised explicitly (every writer in this repo is
+  // already upgraded), so the tests exercise the final schema. Production paths never do this implicitly.
+  await migrate({ connectionString: migratorUrl, allowContract: contractVersions() });
   await seedFixtures(adminUrl);
 
   project.provide('dbUrl', adminUrl);

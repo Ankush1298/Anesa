@@ -1,64 +1,30 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { cpSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import pg from 'pg';
-import { afterAll, describe, expect, inject, it } from 'vitest';
-import { bootstrapDatabase } from '../../tools/db/bootstrap.js';
+import { afterAll, describe, expect, it } from 'vitest';
 import type { AppError } from '../../src/shared/errors/http-errors.js';
 import { RoleAssignmentService } from '../../src/shared/authorization/assignments.js';
 import { Database } from '../../src/shared/database/index.js';
 import { createPool } from '../../src/shared/database/pool.js';
 import { issueTrustedContext } from '../../src/shared/tenancy/issue-trusted-context.js';
-import { DEFAULT_MIGRATIONS_DIR, loadMigrations, migrate } from '../../tools/db/migrate.js';
+import {
+  DEFAULT_MIGRATIONS_DIR,
+  contractVersions,
+  loadMigrations,
+  migrate,
+} from '../../tools/db/migrate.js';
 import { CTX, ORG_A, ORG_C, STAFF_C, STUDENT_A } from '../support/fixtures.js';
 import { seedFixtures } from '../support/fixtures.js';
-import { urlFor } from '../support/role-passwords.js';
+import { dropAll, dropDatabase, freshDatabase } from '../support/fresh-db.js';
 
-// Clean-database migration tests. They reuse the ROLE passwords provided by the global setup (roles are
-// cluster-wide and shared with the other test files), and each test gets its own throw-away database.
-const serverAdminUrl = inject('serverAdminUrl');
-const runtimePw = decodeURIComponent(new URL(inject('dbRuntimeUrl')).password);
-const migratorPw = decodeURIComponent(new URL(inject('dbMigratorUrl')).password);
-const created: string[] = [];
+// Clean-database migration tests: each test gets its own throw-away database from tests/support/fresh-db.ts, whose
+// role/database setup runs under the cluster-wide bootstrap lock (roles are shared by every file on the server).
+// Disposable databases only: every contract migration is explicitly authorised, as an operator would.
+const ALL = { allowContract: contractVersions() };
 
-async function freshDatabase(): Promise<{
-  name: string;
-  admin: string;
-  migrator: string;
-  runtime: string;
-}> {
-  const name = `campusos_mig_${randomBytes(5).toString('hex')}`;
-  const c = new pg.Client({ connectionString: serverAdminUrl });
-  await c.connect();
-  await c.query(`CREATE DATABASE ${name}`);
-  await c.end();
-  created.push(name);
-  const { username, password } = new URL(serverAdminUrl);
-  const admin = urlFor(serverAdminUrl, username, decodeURIComponent(password), name);
-  await bootstrapDatabase({
-    adminUrl: admin,
-    runtimePassword: runtimePw,
-    migratorPassword: migratorPw,
-  });
-  return {
-    name,
-    admin,
-    migrator: urlFor(serverAdminUrl, 'app_migrator', migratorPw, name),
-    runtime: urlFor(serverAdminUrl, 'app_runtime', runtimePw, name),
-  };
-}
-
-async function dropDatabase(name: string): Promise<void> {
-  const c = new pg.Client({ connectionString: serverAdminUrl });
-  await c.connect();
-  await c.query(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
-  await c.end();
-}
-
-afterAll(async () => {
-  for (const n of created) await dropDatabase(n);
-});
+afterAll(dropAll);
 
 async function one<T extends Record<string, unknown>>(
   url: string,
@@ -106,14 +72,26 @@ describe('migrations from a clean database', () => {
       '0005',
       '0006',
       '0007',
+      '0008',
+      '0009',
     ]);
     expect(m.every((x) => /^[0-9a-f]{64}$/.test(x.checksum))).toBe(true);
   });
 
   it('applies everything on an empty database, records checksums and is a no-op the second time', async () => {
     const db = await freshDatabase();
-    const first = await migrate({ connectionString: db.migrator });
-    expect(first.applied).toEqual(['0001', '0002', '0003', '0004', '0005', '0006', '0007']);
+    const first = await migrate({ connectionString: db.migrator, ...ALL });
+    expect(first.applied).toEqual([
+      '0001',
+      '0002',
+      '0003',
+      '0004',
+      '0005',
+      '0006',
+      '0007',
+      '0008',
+      '0009',
+    ]);
     const ledger = await one<{ version: string; checksum: string; applied_by: string }>(
       db.admin,
       'SELECT version, checksum, applied_by FROM platform.schema_migrations ORDER BY version',
@@ -126,12 +104,24 @@ describe('migrations from a clean database', () => {
       '0005',
       '0006',
       '0007',
+      '0008',
+      '0009',
     ]);
     expect(new Set(ledger.map((l) => l.applied_by))).toEqual(new Set(['app_migrator']));
     expect(ledger.map((l) => l.checksum.trim())).toEqual(loadMigrations().map((m) => m.checksum));
-    const second = await migrate({ connectionString: db.migrator });
+    const second = await migrate({ connectionString: db.migrator, ...ALL });
     expect(second.applied).toEqual([]);
-    expect(second.alreadyApplied).toEqual(['0001', '0002', '0003', '0004', '0005', '0006', '0007']);
+    expect(second.alreadyApplied).toEqual([
+      '0001',
+      '0002',
+      '0003',
+      '0004',
+      '0005',
+      '0006',
+      '0007',
+      '0008',
+      '0009',
+    ]);
   });
 
   it('refuses to run as anyone but app_migrator (so objects can never be owned by the wrong role)', async () => {
@@ -146,7 +136,7 @@ describe('migrations from a clean database', () => {
 
   it('detects an already-applied migration that was edited (checksum drift)', async () => {
     const db = await freshDatabase();
-    await migrate({ connectionString: db.migrator });
+    await migrate({ connectionString: db.migrator, ...ALL });
     const dir = mkdtempSync(join(tmpdir(), 'campusos-mig-'));
     cpSync(DEFAULT_MIGRATIONS_DIR, dir, { recursive: true });
     const file = join(dir, '0002_core_tables.sql');
@@ -156,9 +146,9 @@ describe('migrations from a clean database', () => {
 
   it('detects a migration that exists in the database but not in source control', async () => {
     const db = await freshDatabase();
-    await migrate({ connectionString: db.migrator });
+    await migrate({ connectionString: db.migrator, ...ALL });
     const dir = mkdtempSync(join(tmpdir(), 'campusos-mig-'));
-    for (const f of readdirSync(DEFAULT_MIGRATIONS_DIR).filter((x) => !x.startsWith('0007'))) {
+    for (const f of readdirSync(DEFAULT_MIGRATIONS_DIR).filter((x) => !x.startsWith('0009'))) {
       cpSync(join(DEFAULT_MIGRATIONS_DIR, f), join(dir, f));
     }
     await expect(migrate({ connectionString: db.migrator, dir })).rejects.toThrow(
@@ -186,14 +176,14 @@ describe('migrations from a clean database', () => {
   it('reproducible: two independent clean databases end up with an identical security-relevant schema', async () => {
     const a = await freshDatabase();
     const b = await freshDatabase();
-    await migrate({ connectionString: a.migrator });
-    await migrate({ connectionString: b.migrator });
+    await migrate({ connectionString: a.migrator, ...ALL });
+    await migrate({ connectionString: b.migrator, ...ALL });
     expect(await fingerprint(a.admin)).toBe(await fingerprint(b.admin));
   });
 
   it('full cycle: migrate -> seed -> prove isolation -> reset -> migrate again, identical result', async () => {
     const db = await freshDatabase();
-    await migrate({ connectionString: db.migrator });
+    await migrate({ connectionString: db.migrator, ...ALL });
     const schemaBefore = await fingerprint(db.admin);
     await seedFixtures(db.admin);
 
@@ -217,17 +207,26 @@ describe('migrations from a clean database', () => {
 
     // reset (drop everything) and migrate again
     await dropDatabase(db.name);
-    created.splice(created.indexOf(db.name), 1);
     const again = await freshDatabase();
-    const result = await migrate({ connectionString: again.migrator });
-    expect(result.applied).toEqual(['0001', '0002', '0003', '0004', '0005', '0006', '0007']);
+    const result = await migrate({ connectionString: again.migrator, ...ALL });
+    expect(result.applied).toEqual([
+      '0001',
+      '0002',
+      '0003',
+      '0004',
+      '0005',
+      '0006',
+      '0007',
+      '0008',
+      '0009',
+    ]);
     expect(await fingerprint(again.admin)).toBe(schemaBefore);
     await seedFixtures(again.admin); // seeds cleanly into the re-created schema
   });
 
   it('after migrating, the runtime role works and the owner role is still blind', async () => {
     const db = await freshDatabase();
-    await migrate({ connectionString: db.migrator });
+    await migrate({ connectionString: db.migrator, ...ALL });
     await seedFixtures(db.admin);
     const asOwner = await one<{ n: string }>(
       db.migrator,
@@ -246,7 +245,7 @@ describe('audit partitions fail closed end-to-end (migration 0007)', () => {
 
   it('with no partition for the current month the audit insert fails, the grant is NOT committed and no row is stored; once the partition exists the same grant succeeds', async () => {
     const db = await freshDatabase();
-    await migrate({ connectionString: db.migrator });
+    await migrate({ connectionString: db.migrator, ...ALL });
     await seedFixtures(db.admin);
     const fresh = new Database(createPool({ connectionString: db.runtime, ssl: false, max: 2 }));
     try {

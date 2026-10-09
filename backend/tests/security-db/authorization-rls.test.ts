@@ -1,12 +1,18 @@
 import { describe, expect, it } from 'vitest';
 import {
   CAMPUS_1,
+  CAMPUS_2,
+  CAMPUS_B1,
   CTX,
+  DEPT_1,
+  DEPT_2,
+  DEPT_B1,
   HOD_A,
   ORG_A,
   ORG_B,
   STAFF_A,
   TEMP_A,
+  UNKNOWN_V7,
   USER_A,
   USER_B,
 } from '../support/fixtures.js';
@@ -142,8 +148,14 @@ describe('authorization tables: runtime privileges are least-privilege', () => {
 });
 
 describe('role_assignments integrity (database-level)', () => {
-  const insert = `INSERT INTO app.role_assignments (id, organization_id, user_id, role_id, scope_type, scope_id, valid_from, valid_until, status)
-                  SELECT $1::uuid, $2::uuid, $3::uuid, r.id, $4, $5::uuid, $6::timestamptz, $7::timestamptz, $8 FROM app.roles r WHERE r.organization_id = $2::uuid AND r.code = $9`;
+  // The typed scope column matching the scope type is derived from the scope id, as RoleAssignmentService does.
+  const insert = `INSERT INTO app.role_assignments (id, organization_id, user_id, role_id, scope_type, scope_id, campus_id, department_id, valid_from, valid_until, status)
+                  SELECT $1::uuid, $2::uuid, $3::uuid, r.id, $4::text, $5::uuid,
+                         CASE WHEN $4::text = 'CAMPUS' THEN $5::uuid END, CASE WHEN $4::text = 'DEPARTMENT' THEN $5::uuid END,
+                         $6::timestamptz, $7::timestamptz, $8 FROM app.roles r WHERE r.organization_id = $2::uuid AND r.code = $9`;
+  // Fully explicit typed columns, for the inconsistent combinations the derived form can never produce.
+  const insertRaw = `INSERT INTO app.role_assignments (id, organization_id, user_id, role_id, scope_type, scope_id, campus_id, department_id)
+                     SELECT $1::uuid, $2::uuid, $3::uuid, r.id, $4::text, $5::uuid, $6::uuid, $7::uuid FROM app.roles r WHERE r.organization_id = $2::uuid AND r.code = 'HOD'`;
   const asAdmin = async (sql: string, p: readonly unknown[]): Promise<string | undefined> => {
     try {
       await adminQuery(sql, p);
@@ -181,7 +193,7 @@ describe('role_assignments integrity (database-level)', () => {
       ORG_A,
       TEMP_A,
       'DEPARTMENT',
-      CAMPUS_1,
+      DEPT_1,
       '2020-01-01',
       null,
       'ACTIVE',
@@ -191,6 +203,10 @@ describe('role_assignments integrity (database-level)', () => {
       for (const set of [
         `user_id = '${HOD_A}'`,
         `scope_id = '${USER_A}'`,
+        `scope_id = '${DEPT_2}'`,
+        `department_id = '${DEPT_2}'`, // typed columns are immutable too, even when still consistent elsewhere
+        `department_id = NULL`,
+        `campus_id = '${CAMPUS_1}'`,
         `scope_type = 'CAMPUS'`,
         `valid_from = now()`,
       ]) {
@@ -223,6 +239,65 @@ describe('role_assignments integrity (database-level)', () => {
       ).toBe('23001');
     } finally {
       await adminQuery('DELETE FROM app.role_assignments WHERE id = $1', [ASSIGNMENT]);
+    }
+  });
+
+  it('typed scope columns must agree with scope_type and scope_id (ra_scope_integrity_ck, 0009)', async () => {
+    const mk = (type: string, sid: string | null, campus: string | null, dept: string | null) =>
+      asAdmin(insertRaw, [ASSIGNMENT, ORG_A, TEMP_A, type, sid, campus, dept]);
+    try {
+      // consistent combinations are accepted (and removed again)
+      const accepted: [string, string | null, string | null, string | null][] = [
+        ['ORGANIZATION', null, null, null],
+        ['CAMPUS', CAMPUS_1, CAMPUS_1, null],
+        ['DEPARTMENT', DEPT_1, null, DEPT_1],
+      ];
+      for (const ok of accepted) {
+        expect(await mk(ok[0], ok[1], ok[2], ok[3]), ok.join()).toBeUndefined();
+        await adminQuery('DELETE FROM app.role_assignments WHERE id = $1', [ASSIGNMENT]);
+      }
+      // every inconsistent combination is a CHECK violation
+      expect(await mk('CAMPUS', CAMPUS_1, null, null), 'CAMPUS without campus_id').toBe('23514');
+      expect(await mk('DEPARTMENT', DEPT_1, null, null), 'DEPARTMENT without department_id').toBe(
+        '23514',
+      );
+      expect(await mk('CAMPUS', CAMPUS_1, CAMPUS_2, null), 'campus_id <> scope_id').toBe('23514');
+      expect(await mk('DEPARTMENT', DEPT_1, null, DEPT_2), 'department_id <> scope_id').toBe(
+        '23514',
+      );
+      expect(await mk('CAMPUS', CAMPUS_1, CAMPUS_1, DEPT_1), 'CAMPUS with department_id').toBe(
+        '23514',
+      );
+      expect(await mk('DEPARTMENT', DEPT_1, CAMPUS_1, DEPT_1), 'DEPARTMENT with campus_id').toBe(
+        '23514',
+      );
+      expect(await mk('ORGANIZATION', null, CAMPUS_1, null), 'ORGANIZATION with campus_id').toBe(
+        '23514',
+      );
+      expect(await mk('ORGANIZATION', null, null, DEPT_1), 'ORGANIZATION with department_id').toBe(
+        '23514',
+      );
+    } finally {
+      await adminQuery('DELETE FROM app.role_assignments WHERE id = $1', [ASSIGNMENT]);
+    }
+  });
+
+  it('a typed scope column cannot point at another tenant (composite foreign keys)', async () => {
+    const mk = (type: string, id: string, campus: string | null, dept: string | null) =>
+      asAdmin(insertRaw, [ASSIGNMENT, ORG_A, TEMP_A, type, id, campus, dept]);
+    try {
+      expect(await mk('CAMPUS', CAMPUS_B1, CAMPUS_B1, null)).toBe('23503');
+      expect(await mk('DEPARTMENT', DEPT_B1, null, DEPT_B1)).toBe('23503');
+      expect(await mk('CAMPUS', UNKNOWN_V7, UNKNOWN_V7, null)).toBe('23503');
+    } finally {
+      await adminQuery('DELETE FROM app.role_assignments WHERE id = $1', [ASSIGNMENT]);
+    }
+  });
+
+  it('the runtime role cannot write the typed scope columns after creation', async () => {
+    for (const col of ['campus_id', 'department_id', 'scope_id']) {
+      const r = await runAs(CTX.staffA, `UPDATE app.role_assignments SET ${col} = NULL`);
+      expect(r.error?.code, col).toBe('42501');
     }
   });
 

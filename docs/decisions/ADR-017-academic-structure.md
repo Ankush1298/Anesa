@@ -15,3 +15,9 @@ Hard-coded semester model; fully generic hierarchy; configurable period/term/coh
 
 ## Consequences
 Supports semester/trimester/annual/year systems and electives without schema change; some joint-degree cases deferred.
+
+## Amendment (2026-10-10): F2.1 foundation (campuses, departments, typed role scopes)
+Migrations 0008 (expand) and 0009 (contract) add `app.campuses`, `app.departments` and typed
+`role_assignments.campus_id` / `department_id` that must agree with `scope_id`. A campus carries a **required** IANA
+timezone that is fixed after creation; it is validated on the server against the tz database (never defaulted to UTC).
+Schema, privileges, locking order, timezone policy and rollout: `docs/architecture/v3/18-academic-structure-f21.md`.

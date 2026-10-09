@@ -10,6 +10,8 @@ import {
 
 const APP_TABLES = [
   'audit_events',
+  'campuses',
+  'departments',
   'organizations',
   'role_assignments',
   'role_permissions',

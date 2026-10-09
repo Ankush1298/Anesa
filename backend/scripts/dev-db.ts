@@ -61,11 +61,17 @@ await bootstrapDatabase({
   runtimePassword: decodeURIComponent(runtime.password),
   migratorPassword: decodeURIComponent(migrator.password),
 });
+// Deliberately NO allowContract: the dev database never receives a contract migration implicitly.
 const result = await migrate({ connectionString: migrator.toString() });
 
 console.log(
   `PostgreSQL ready on ${admin.host} (database: ${dbName}); migrations applied: [${result.applied.join(', ')}]. Ctrl+C to stop.`,
 );
+if (result.deferred.length > 0) {
+  console.warn(
+    `Deferred contract migration(s) [${result.deferred.join(', ')}]: run \`pnpm db:migrate -- --allow-contract ${result.blockedBy}\` only after the writers are upgraded.`,
+  );
+}
 const stop = async (): Promise<void> => {
   await server.stop();
   process.exit(0);

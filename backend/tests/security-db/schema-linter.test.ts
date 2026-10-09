@@ -171,6 +171,8 @@ describe('schema linter (S-2)', () => {
     );
     expect(rows.map((r) => r.relname).sort()).toEqual([
       'audit_events',
+      'campuses',
+      'departments',
       'organizations',
       'role_assignments',
       'role_permissions',

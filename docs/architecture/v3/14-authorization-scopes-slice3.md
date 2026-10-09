@@ -41,7 +41,7 @@ Rules that hold for every decision:
 
 ## Known limits (carried to later slices)
 
-* `scope_id` has no foreign key: campuses/departments are not modelled yet.
+* ~~`scope_id` has no foreign key~~ (superseded by F2.1, `18-academic-structure-f21.md`): campuses and departments exist, `role_assignments` carries typed `campus_id` / `department_id` with same-tenant composite foreign keys, and from migration 0009 the strict `ra_scope_integrity_ck` requires them to agree with `scope_id`. The engine still evaluates `scope_id`; the typed columns are the integrity/FK layer.
 * Role grant/revoke are now audited with a mandatory reason (F1, `17-audit-foundation.md`). Still not implemented: auditing of any other operation, denial auditing, an audit viewer, MFA step-up for CRITICAL permissions and the `authz_version` cache key.
 * `role_grant_rules` is a code constant, not a tenant table.
 * `roles` / `role_permissions` are read-only for `app_runtime`; provisioning (seeding a tenant) is a platform operation (`seedTenantRoles`).
