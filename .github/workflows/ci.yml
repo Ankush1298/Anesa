@@ -57,8 +57,14 @@ jobs:
       # Merge blockers: tenant isolation, cross-student, authorization matrix, hygiene (grows each slice).
       - name: Security tests
         run: pnpm test:security
+      - name: Web tests
+        run: pnpm --filter @campusos/web run test
       - name: Secret scan
         run: pnpm check:secrets
+      - name: Build
+        run: pnpm build
+      - name: Check bundle
+        run: pnpm check:bundle
 
   dependency-audit:
     name: Dependency audit

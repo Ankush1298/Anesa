@@ -98,10 +98,15 @@ export function registerAuthRoutes(
         return reply.code(401).send({ error: 'UNAUTHORIZED' });
       }
 
+      // display_name / roles / capabilities: for rendering menus only; every action is re-checked
+      // server-side. Spread so no route code ever inspects role names.
+      if (!authService) throw new Error('authService not provided');
+      const profile = await authService.describe(ctx);
       return reply.send({
         tenant_id: ctx.tenantId,
         user_id: ctx.userId,
         actor_kind: ctx.actorKind,
+        ...profile,
         csrf_token: csrfTokenFor(request.cookies[SESSION_COOKIE] ?? ''),
       });
     },

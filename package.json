@@ -18,8 +18,11 @@
     "test:integration": "pnpm --filter @campusos/backend run test:integration",
     "test:security": "pnpm --filter @campusos/backend run test:security",
     "check:secrets": "pnpm --filter @campusos/backend run check:secrets",
-    "verify": "pnpm lint && pnpm format:check && pnpm typecheck && pnpm test && pnpm check:secrets",
+    "verify": "pnpm lint && pnpm format:check && pnpm typecheck && pnpm test && pnpm check:secrets && pnpm build && pnpm check:bundle",
     "dev": "pnpm --filter @campusos/backend run dev",
+    "dev:web": "pnpm --filter @campusos/web run dev",
+    "build": "pnpm -r --if-present run build",
+    "check:bundle": "pnpm --filter @campusos/web run check:bundle",
     "dev:db": "pnpm --filter @campusos/backend run dev:db",
     "test:security:db": "pnpm --filter @campusos/backend run test:security:db",
     "db:bootstrap": "pnpm --filter @campusos/backend run db:bootstrap",
@@ -28,6 +31,8 @@
   "devDependencies": {
     "@eslint/js": "^10.0.0",
     "eslint": "^10.12.0",
+    "eslint-plugin-jsx-a11y": "^6.10.2",
+    "eslint-plugin-react-hooks": "^7.1.1",
     "prettier": "^3.6.0",
     "typescript": "~6.0.3",
     "typescript-eslint": "^8.71.1"

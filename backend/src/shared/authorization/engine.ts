@@ -84,6 +84,41 @@ export class AuthorizationEngine {
     return res.rows;
   }
 
+  /**
+   * What the actor can do, for UI rendering only (menus). Resolved server-side per request from the
+   * same effective-assignment rule as every decision; it is NOT an authorization decision: each
+   * action is still checked by assert(). Sorted, so the answer is deterministic.
+   */
+  static async describeActor(
+    tx: TenantTx,
+    ctx: TrustedContext,
+  ): Promise<{ roleCodes: string[]; capabilities: string[] }> {
+    if (!isTrustedContext(ctx)) return { roleCodes: [], capabilities: [] };
+    const roles = await tx.query<{ code: string }>(
+      `SELECT DISTINCT r.code
+         FROM app.role_assignments ra
+         JOIN app.roles r ON r.organization_id = ra.organization_id AND r.id = ra.role_id
+        WHERE ra.organization_id = $1 AND ra.user_id = $2 AND ra.status = 'ACTIVE'
+          AND ra.valid_from <= now() AND (ra.valid_until IS NULL OR ra.valid_until > now())
+        ORDER BY r.code`,
+      [ctx.tenantId, ctx.userId],
+    );
+    const caps = await tx.query<{ permission_code: string }>(
+      `SELECT DISTINCT rp.permission_code
+         FROM app.role_assignments ra
+         JOIN app.role_permissions rp
+           ON rp.organization_id = ra.organization_id AND rp.role_id = ra.role_id
+        WHERE ra.organization_id = $1 AND ra.user_id = $2 AND ra.status = 'ACTIVE'
+          AND ra.valid_from <= now() AND (ra.valid_until IS NULL OR ra.valid_until > now())
+        ORDER BY rp.permission_code`,
+      [ctx.tenantId, ctx.userId],
+    );
+    return {
+      roleCodes: roles.rows.map((r) => r.code),
+      capabilities: caps.rows.map((c) => c.permission_code),
+    };
+  }
+
   /** Does the actor hold the permission in any scope? (route-level / capability check) */
   static async hasPermission(
     tx: TenantTx,

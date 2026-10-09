@@ -1,6 +1,8 @@
 // @ts-check
 import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
+import jsxA11y from 'eslint-plugin-jsx-a11y';
+import reactHooks from 'eslint-plugin-react-hooks';
 
 const PG_PATH = {
   name: 'pg',
@@ -50,7 +52,7 @@ export default tseslint.config(
   },
   js.configs.recommended,
   {
-    files: ['**/*.ts'],
+    files: ['**/*.ts', '**/*.tsx'],
     extends: [...tseslint.configs.recommendedTypeChecked],
     languageOptions: {
       parserOptions: { projectService: true, tsconfigRootDir: import.meta.dirname },
@@ -122,6 +124,39 @@ export default tseslint.config(
       'backend/vitest.config.ts',
     ],
     rules: { 'no-restricted-syntax': 'off' },
+  },
+  // Browser app: accessibility + hooks rules, and hard bans on anything that could expose or persist
+  // the session or secrets (the matching static tests live in apps/web/tests/security-static.test.ts).
+  {
+    files: ['apps/web/**/*.{ts,tsx}'],
+    plugins: { 'jsx-a11y': jsxA11y, 'react-hooks': reactHooks },
+    rules: {
+      ...jsxA11y.flatConfigs.recommended.rules,
+      ...reactHooks.configs.flat.recommended.rules,
+      'react-hooks/set-state-in-effect': 'off', // session restore legitimately sets state from an effect
+      'no-restricted-globals': [
+        'error',
+        { name: 'localStorage', message: 'No client-side persistence of identity or tokens.' },
+        { name: 'sessionStorage', message: 'No client-side persistence of identity or tokens.' },
+      ],
+      'no-restricted-properties': [
+        'error',
+        {
+          object: 'document',
+          property: 'cookie',
+          message: 'The session cookie is HttpOnly; never touch cookies.',
+        },
+      ],
+      'react/no-danger': 'off',
+    },
+  },
+  {
+    files: ['apps/web/tests/**/*.{ts,tsx}'],
+    rules: { 'no-restricted-globals': 'off' }, // tests prove nothing reads storage by writing to it
+  },
+  {
+    files: ['apps/web/vite.config.ts', 'apps/web/scripts/**/*.ts'],
+    rules: { 'no-restricted-syntax': 'off', 'no-console': 'off' },
   },
   // Scripts and CLIs may print.
   {

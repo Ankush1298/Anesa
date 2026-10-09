@@ -1,0 +1,4 @@
+# Private authenticated application: nothing here is for crawlers.
+# robots.txt is a courtesy, NOT a security control; access control is enforced by the backend.
+User-agent: *
+Disallow: /

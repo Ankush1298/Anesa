@@ -5,6 +5,7 @@ import { generateSessionToken, hashToken, verifyPassword } from './auth.reposito
 import type { AuthRepository } from './auth.repository.js';
 import { issueTrustedContext } from '../../shared/tenancy/issue-trusted-context.js';
 import type { TrustedContext } from '../../shared/tenancy/trusted-context.js';
+import { AuthorizationEngine } from '../../shared/authorization/engine.js';
 
 export class AuthService {
   constructor(
@@ -87,6 +88,22 @@ export class AuthService {
     });
     if (!result) throw new AppError(401, 'INVALID_CREDENTIALS', 'Invalid credentials');
     return result;
+  }
+
+  /** Display data for the signed-in user (UI only). Everything comes from the tenant transaction. */
+  async describe(ctx: TrustedContext) {
+    return this.db.withTenant(ctx, async (tx) => {
+      const user = await tx.query<{ display_name: string }>(
+        'SELECT display_name FROM app.users WHERE organization_id = $1 AND id = $2',
+        [ctx.tenantId, ctx.userId],
+      );
+      const who = await AuthorizationEngine.describeActor(tx, ctx);
+      return {
+        display_name: user.rows[0]?.display_name ?? '',
+        roles: who.roleCodes,
+        capabilities: who.capabilities,
+      };
+    });
   }
 
   async logout(rawToken: string): Promise<void> {
