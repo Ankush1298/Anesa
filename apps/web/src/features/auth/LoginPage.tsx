@@ -4,6 +4,7 @@ import { Alert } from '../../components/ui/Alert';
 import { Button } from '../../components/ui/Button';
 import { TextField } from '../../components/ui/TextField';
 import { Logo } from '../../components/Logo';
+import { Footer } from '../../components/Footer';
 import { usePageTitle } from '../../components/usePageTitle';
 import { loginErrorMessage } from '../../lib/api/messages';
 import { useAuth } from './AuthProvider';
@@ -81,62 +82,65 @@ export function LoginPage() {
   }
 
   return (
-    <main className="auth-page" id="main">
-      <div className="auth-card">
-        <Logo />
-        <h1>Sign in</h1>
-        <p className="muted">Use your campus account to continue.</p>
-        {notice ? <Alert tone="info">{notice}</Alert> : null}
-        {formError ? <Alert tone="error">{formError}</Alert> : null}
-        <form onSubmit={(e) => void onSubmit(e)} noValidate>
-          <TextField
-            label="Email address"
-            name="email"
-            type="email"
-            inputMode="email"
-            autoComplete="username"
-            autoCapitalize="none"
-            spellCheck={false}
-            required
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            error={errors.email}
-            inputRef={emailRef}
-          />
-          <TextField
-            label="Password"
-            name="password"
-            type="password"
-            autoComplete="current-password"
-            required
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            error={errors.password}
-            inputRef={passwordRef}
-          />
-          <details className="optional">
-            <summary>Belong to more than one organisation?</summary>
+    <div className="auth-page">
+      <main className="auth-main" id="main">
+        <div className="auth-card">
+          <Logo />
+          <h1>Sign in</h1>
+          <p className="muted">Use your campus account to continue.</p>
+          {notice ? <Alert tone="info">{notice}</Alert> : null}
+          {formError ? <Alert tone="error">{formError}</Alert> : null}
+          <form onSubmit={(e) => void onSubmit(e)} noValidate>
             <TextField
-              label="Organisation code (optional)"
-              name="tenant"
-              type="text"
-              autoComplete="organization"
+              label="Email address"
+              name="email"
+              type="email"
+              inputMode="email"
+              autoComplete="username"
               autoCapitalize="none"
               spellCheck={false}
-              hint="Only needed if you were given a code by your institution."
-              value={tenant}
-              onChange={(e) => setTenant(e.target.value)}
+              required
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              error={errors.email}
+              inputRef={emailRef}
             />
-          </details>
-          <Button type="submit" pending={pending} className="btn-block">
-            {pending ? 'Signing in…' : 'Sign in'}
-          </Button>
-        </form>
-        <p className="fineprint">
-          Access is limited to authorised users. Forgot your password? Contact your institution’s
-          administrator; self-service reset is not available yet.
-        </p>
-      </div>
-    </main>
+            <TextField
+              label="Password"
+              name="password"
+              type="password"
+              autoComplete="current-password"
+              required
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              error={errors.password}
+              inputRef={passwordRef}
+            />
+            <details className="optional">
+              <summary>Belong to more than one organisation?</summary>
+              <TextField
+                label="Organisation code (optional)"
+                name="tenant"
+                type="text"
+                autoComplete="organization"
+                autoCapitalize="none"
+                spellCheck={false}
+                hint="Only needed if you were given a code by your institution."
+                value={tenant}
+                onChange={(e) => setTenant(e.target.value)}
+              />
+            </details>
+            <Button type="submit" pending={pending} className="btn-block">
+              {pending ? 'Signing in…' : 'Sign in'}
+            </Button>
+          </form>
+          <p className="fineprint">
+            Access is limited to authorised users. Forgot your password? Contact your institution’s
+            administrator; self-service reset is not available yet.
+          </p>
+        </div>
+      </main>
+      <Footer />
+    </div>
   );
 }

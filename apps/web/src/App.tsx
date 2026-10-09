@@ -3,10 +3,21 @@ import { LoginPage } from './features/auth/LoginPage';
 import { RequireAuth, RequireCapability } from './features/auth/guards';
 import { HomePage } from './features/home/Homes';
 import { AppShell } from './features/shell/AppShell';
+import { InformationalShell } from './features/shell/InformationalShell';
 import { ROUTE_REQUIREMENTS } from './features/shell/navigation';
 import { AccountPage } from './pages/AccountPage';
 import { ComingSoonPage } from './pages/ComingSoon';
 import { NotFoundPage } from './pages/StatePages';
+import {
+  AboutPage,
+  AccessibilityPage,
+  ContactPage,
+  CookiesPage,
+  FaqPage,
+  HelpPage,
+  PrivacyPage,
+  TermsPage,
+} from './pages/info';
 
 function Guarded({
   path,
@@ -29,6 +40,16 @@ export function AppRoutes() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      <Route element={<InformationalShell />}>
+        <Route path="about" element={<AboutPage />} />
+        <Route path="help" element={<HelpPage />} />
+        <Route path="faq" element={<FaqPage />} />
+        <Route path="privacy" element={<PrivacyPage />} />
+        <Route path="terms" element={<TermsPage />} />
+        <Route path="cookies" element={<CookiesPage />} />
+        <Route path="accessibility" element={<AccessibilityPage />} />
+        <Route path="contact" element={<ContactPage />} />
+      </Route>
       <Route element={<RequireAuth />}>
         <Route element={<AppShell />}>
           <Route index element={<HomePage />} />

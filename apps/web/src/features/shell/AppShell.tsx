@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router';
 import { Button } from '../../components/ui/Button';
 import { Logo } from '../../components/Logo';
+import { Footer } from '../../components/Footer';
 import { useAuth } from '../auth/AuthProvider';
 import { roleLabel } from '../auth/identity';
 import { visibleNav } from './navigation';
@@ -143,9 +144,12 @@ export function AppShell() {
       {navOpen ? (
         <div className="scrim" aria-hidden="true" onClick={() => setNavOpen(false)} />
       ) : null}
-      <main id="main" ref={main} tabIndex={-1} className="content">
-        <Outlet />
-      </main>
+      <div className="shell-main">
+        <main id="main" ref={main} tabIndex={-1} className="content">
+          <Outlet />
+        </main>
+        <Footer />
+      </div>
     </div>
   );
 }
