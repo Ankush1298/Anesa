@@ -24,6 +24,7 @@
     "build": "pnpm -r --if-present run build",
     "check:bundle": "pnpm --filter @campusos/web run check:bundle",
     "dev:db": "pnpm --filter @campusos/backend run dev:db",
+    "seed:dev": "pnpm --filter @campusos/backend run seed:dev",
     "test:security:db": "pnpm --filter @campusos/backend run test:security:db",
     "db:bootstrap": "pnpm --filter @campusos/backend run db:bootstrap",
     "db:migrate": "pnpm --filter @campusos/backend run db:migrate"
