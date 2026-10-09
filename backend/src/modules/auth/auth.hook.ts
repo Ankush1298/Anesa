@@ -5,6 +5,8 @@ import type { TrustedContext } from '../../shared/tenancy/trusted-context.js';
 import { AppError } from '../../shared/errors/http-errors.js';
 import { AuthorizationEngine, type ResourceScope } from '../../shared/authorization/engine.js';
 import type { Database } from '../../shared/database/index.js';
+import { assertCsrfToken, assertOrigin, isUnsafeMethod } from './csrf.js';
+import { SESSION_COOKIE } from './session-cookie.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -19,11 +21,25 @@ declare module 'fastify' {
 export interface AuthPluginOptions {
   authService: AuthService;
   db: Database;
+  /** Exact browser origins allowed for state-changing requests (empty = same host only). */
+  allowedOrigins: readonly string[];
 }
 
 const authPlugin: FastifyPluginAsync<AuthPluginOptions> = async (app, opts) => {
   await Promise.resolve();
   app.decorateRequest('tenantContext', undefined);
+
+  // 0. CSRF origin check: every state-changing request, public routes (login/logout) included.
+  app.addHook('onRequest', (request, _reply, done) => {
+    try {
+      if (!request.is404 && isUnsafeMethod(request.method)) {
+        assertOrigin(request, opts.allowedOrigins);
+      }
+      done();
+    } catch (err) {
+      done(err as Error);
+    }
+  });
 
   app.addHook('onRequest', (request, _reply, done) => {
     // 1. Identity & Auth Check
@@ -32,7 +48,7 @@ const authPlugin: FastifyPluginAsync<AuthPluginOptions> = async (app, opts) => {
     }
 
     const runAuth = async () => {
-      const token = request.cookies.session_token;
+      const token = request.cookies[SESSION_COOKIE];
       if (!token) {
         throw new AppError(401, 'UNAUTHORIZED', 'Missing authentication token');
       }
@@ -46,6 +62,9 @@ const authPlugin: FastifyPluginAsync<AuthPluginOptions> = async (app, opts) => {
         }
         throw new AppError(500, 'INTERNAL_ERROR', 'Authentication failed unexpectedly');
       }
+
+      // 1b. CSRF token: required for every authenticated state-changing request.
+      if (isUnsafeMethod(request.method)) assertCsrfToken(request, token);
     };
 
     runAuth()

@@ -38,12 +38,22 @@ export class AuthRepository {
     return res.rows[0] ?? null;
   }
 
+  /**
+   * Per-account safety net against DISTRIBUTED guessing (per-IP limits are in LoginRateLimiter).
+   * Threshold is 10, the lock is fixed 15 minutes and is NEVER extended while active, and the counter
+   * restarts once a lock has expired, so one attacker cannot keep a victim locked out indefinitely.
+   */
   async recordFailedLogin(tx: TenantTx, identityId: string): Promise<void> {
     await tx.query(
-      `UPDATE platform.identities 
-       SET failed_login_count = failed_login_count + 1,
-           locked_until = CASE WHEN failed_login_count + 1 >= 5 THEN now() + interval '15 minutes' ELSE locked_until END
-       WHERE id = $1`,
+      `UPDATE platform.identities i
+          SET failed_login_count = n.c::smallint,
+              locked_until = CASE WHEN i.locked_until > now() THEN i.locked_until
+                                  WHEN n.c >= 10 THEN now() + interval '15 minutes'
+                                  ELSE NULL END
+         FROM (SELECT id, LEAST(100, CASE WHEN locked_until IS NOT NULL AND locked_until <= now()
+                                          THEN 1 ELSE failed_login_count + 1 END) AS c
+                 FROM platform.identities WHERE id = $1) n
+        WHERE i.id = n.id`,
       [identityId],
     );
   }

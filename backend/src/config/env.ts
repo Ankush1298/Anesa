@@ -45,7 +45,34 @@ const EnvSchema = z.object({
   DATABASE_SSL: z.enum(['disable', 'require']).default('disable'),
   DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(200).default(10),
   TRUST_PROXY: booleanString,
+  // Comma-separated browser origins allowed to call state-changing endpoints (CSRF origin check).
+  APP_ORIGINS: z.string().default(''),
 });
+
+/** Parses APP_ORIGINS: exact origins only (scheme://host[:port]), no paths, no wildcards. */
+function parseOrigins(raw: string, problems: string[]): string[] {
+  const out: string[] = [];
+  for (const item of raw
+    .split(',')
+    .map((x) => x.trim())
+    .filter(Boolean)) {
+    try {
+      const u = new URL(item);
+      if (
+        (u.protocol !== 'https:' && u.protocol !== 'http:') ||
+        u.origin !== item ||
+        item.includes('*')
+      ) {
+        throw new Error();
+      }
+      out.push(u.origin);
+    } catch {
+      problems.push('APP_ORIGINS: each entry must be an exact origin like https://app.example.edu');
+      break;
+    }
+  }
+  return out;
+}
 
 export interface AppConfig {
   readonly env: 'development' | 'test' | 'production';
@@ -53,6 +80,8 @@ export interface AppConfig {
   readonly port: number;
   readonly logLevel: string;
   readonly trustProxy: boolean;
+  /** Exact browser origins allowed to send state-changing requests. Empty = same-host only (dev). */
+  readonly allowedOrigins: readonly string[];
   readonly database: {
     readonly url: Secret;
     readonly ssl: boolean;
@@ -81,7 +110,13 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
   const e = parsed.data;
 
   const problems: string[] = [];
+  const allowedOrigins = parseOrigins(e.APP_ORIGINS, problems);
   if (e.NODE_ENV === 'production') {
+    if (allowedOrigins.length === 0) {
+      problems.push('APP_ORIGINS: required in production (CSRF origin allow-list)');
+    } else if (allowedOrigins.some((o) => !o.startsWith('https://'))) {
+      problems.push('APP_ORIGINS: must be https:// origins in production');
+    }
     if (e.DATABASE_SSL !== 'require') {
       problems.push('DATABASE_SSL: must be "require" in production');
     }
@@ -97,6 +132,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
     port: e.PORT,
     logLevel: e.LOG_LEVEL,
     trustProxy: e.TRUST_PROXY,
+    allowedOrigins,
     database: {
       url: new Secret(e.DATABASE_URL),
       ssl: e.DATABASE_SSL === 'require',

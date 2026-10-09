@@ -128,3 +128,186 @@ describe('migrations are RLS-safe by construction (static pre-check of the SQL f
     );
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+// Slice 3: authorization guardrails (06 §2, 10 §4). These are static; behaviour is proven elsewhere.
+// ---------------------------------------------------------------------------------------------
+describe('authorization architecture guardrails (Slice 3)', () => {
+  const stripComments = (s: string): string =>
+    s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+  const code = srcFiles.map((f) => ({ path: f.path, text: stripComments(f.text) }));
+  const inAuthz = (p: string): boolean => p.startsWith('src/shared/authorization/');
+  const modules = code.filter((f) => f.path.startsWith('src/modules/'));
+
+  it('a TrustedContext is never forged: no casts to it, no registry access, issuer only used by the auth layer', () => {
+    const forged = code.filter(
+      (f) =>
+        !f.path.startsWith('src/shared/tenancy/') &&
+        /\bas\s+(?:unknown\s+as\s+)?TrustedContext\b|:\s*TrustedContext\s*=\s*\{|registerIssued/.test(
+          f.text,
+        ),
+    );
+    expect(forged.map((f) => f.path)).toEqual([]);
+    const registry = code.filter(
+      (f) => /context-registry/.test(f.text) && !f.path.startsWith('src/shared/tenancy/'),
+    );
+    expect(registry.map((f) => f.path)).toEqual([]);
+  });
+
+  it('only the authorization layer touches the authorization tables', () => {
+    const offenders = code.filter(
+      (f) =>
+        !inAuthz(f.path) &&
+        /\b(?:app\.)?(role_assignments|role_permissions)\b|\bapp\.roles\b|platform\.permissions/.test(
+          f.text,
+        ),
+    );
+    expect(offenders.map((f) => f.path)).toEqual([]);
+  });
+
+  it('routes and hooks contain no ad hoc role checks (no role names, no actorKind/role comparisons)', () => {
+    const roleNames =
+      /['"`](STUDENT|FACULTY|STAFF|HOD|DEPARTMENT_ADMIN|CAMPUS_ADMIN|COLLEGE_ADMIN|REGISTRAR|admin|ADMIN|superuser)['"`]/;
+    const adhoc = /\.role\b|\.roles\b|\brole\s*(?:===|!==|==|!=)|actorKind\s*(?:===|!==|==|!=)/;
+    const offenders = modules.filter(
+      (f) => !f.path.endsWith('auth.service.ts') && (roleNames.test(f.text) || adhoc.test(f.text)),
+    );
+    expect(offenders.map((f) => f.path)).toEqual([]);
+    // role names appear in code only in the role matrix and the DB-facing authorization layer
+    const outside = code.filter(
+      (f) =>
+        !inAuthz(f.path) &&
+        roleNames.test(f.text) &&
+        !/\bSTUDENT\b|\bSTAFF\b/.test(f.text.replace(roleNames, '')),
+    );
+    expect(outside.map((f) => f.path)).toEqual([]);
+  });
+
+  it('request data (body/query/params/headers) never supplies tenant, identity, role, permission or scope', () => {
+    const trusted =
+      /\b(?:req|request)\.(?:body|query|params|headers)\b[^;]*?(?:tenant[_-]?id|user[_-]?id|student[_-]?id|organization[_-]?id|campus[_-]?id|department[_-]?id|\brole|\bpermission|\bscope|actor[_-]?kind)/i;
+    expect(code.filter((f) => !inAuthz(f.path) && trusted.test(f.text)).map((f) => f.path)).toEqual(
+      [],
+    );
+    // the trusted context is attached in exactly one place
+    const writers = code.filter((f) => /\.tenantContext\s*=[^=]/.test(f.text));
+    expect(writers.map((f) => f.path)).toEqual(['src/modules/auth/auth.hook.ts']);
+    // login may read the tenant *slug* only, and it is checked against the identity's memberships
+    const login = readFileSync(resolve(src, 'modules/auth/auth.service.ts'), 'utf8');
+    expect(login).toMatch(/memberships\.find\(\(m\) => m\.org_slug === selectedTenantSlug\)/);
+  });
+
+  it('the tenant-less database door (withSystem) is used by the authentication layer only', () => {
+    const users = code.filter(
+      (f) => /\.withSystem\b/.test(f.text) && !f.path.startsWith('src/shared/database/'),
+    );
+    expect(users.map((f) => f.path).sort()).toEqual(['src/modules/auth/auth.service.ts']);
+  });
+
+  it('the session token is an opaque random value: no permissions, roles or scopes are put in it', () => {
+    // (auth.hook.ts is the authorization wiring and legitimately names `config.permission`)
+    const auth = code.filter(
+      (f) => f.path.startsWith('src/modules/auth/') && !f.path.endsWith('auth.hook.ts'),
+    );
+    expect(
+      auth
+        .filter((f) =>
+          /ROLE_MATRIX|role_permissions|PERMISSION_CATALOG|\.permissions?\b/.test(f.text),
+        )
+        .map((f) => f.path),
+    ).toEqual([]);
+    const repo = readFileSync(resolve(src, 'modules/auth/auth.repository.ts'), 'utf8');
+    expect(repo).toMatch(/randomBytes\(32\)\.toString\('base64url'\)/);
+    expect(repo).not.toMatch(/jwt|jsonwebtoken|sign\(/i);
+    const routes = readFileSync(resolve(src, 'modules/auth/auth.routes.ts'), 'utf8');
+    expect(routes.match(/reply\.cookie\(\s*SESSION_COOKIE,\s*result\.sessionToken,/g)?.length).toBe(
+      1,
+    );
+  });
+
+  it('every permission string used in src is drawn from the central catalog', async () => {
+    const { PERMISSION_CODES } = await import('../../src/shared/authorization/catalog.js');
+    const used: string[] = [];
+    for (const f of code) {
+      for (const m of f.text.matchAll(/permission:\s*'([^']+)'/g)) used.push(m[1]!);
+      for (const m of f.text.matchAll(
+        /\.(?:assert|hasPermission)\(\s*[^,()]+,\s*[^,()]+,\s*'([^']+)'/g,
+      ))
+        used.push(m[1]!);
+    }
+    expect(used.length).toBeGreaterThan(2);
+    for (const p of used) expect(PERMISSION_CODES.has(p), p).toBe(true);
+    // permission literals never appear outside the catalog/matrix/routes as free-floating strings
+    const literal = /['"]((?:session|student|org|role)\.[a-z_]+(?:\.[a-z_]+)?)['"]/g;
+    const stray = code.filter(
+      (f) =>
+        !inAuthz(f.path) &&
+        ![...f.text.matchAll(literal)].every((m) => PERMISSION_CODES.has(m[1]!)),
+    );
+    expect(stray.map((f) => f.path)).toEqual([]);
+  });
+
+  it('the authorization is applied centrally: the hook calls the engine, and routes cannot opt out silently', () => {
+    const hook = readFileSync(resolve(src, 'modules/auth/auth.hook.ts'), 'utf8');
+    expect(hook).toMatch(/addHook\('preHandler'/);
+    expect(hook).toMatch(/AuthorizationEngine\.(assert|hasPermission)\(/);
+    const app = readFileSync(resolve(src, 'app.ts'), 'utf8');
+    expect(app).toMatch(/addHook\('onRoute'/);
+    // `public: true` is an explicit allowlist: only health and the login/logout endpoints
+    const publicRoutes = code
+      .filter((f) => /public:\s*true/.test(f.text) && !f.path.endsWith('app.ts'))
+      .map((f) => f.path)
+      .sort();
+    expect(publicRoutes).toEqual([
+      'src/modules/auth/auth.routes.ts',
+      'src/modules/health/health.routes.ts',
+    ]);
+    expect([
+      ...(code.find((f) => f.path.endsWith('auth.routes.ts'))?.text.matchAll(/public:\s*true/g) ??
+        []),
+    ]).toHaveLength(2);
+    expect([
+      ...(code.find((f) => f.path.endsWith('health.routes.ts'))?.text.matchAll(/public:\s*true/g) ??
+        []),
+    ]).toHaveLength(2);
+  });
+
+  it('the assigned-resolver registry is written only from modules (never from request paths) and tests', () => {
+    const writers = code.filter(
+      (f) => /registerAssignedResolver\(/.test(f.text) && !inAuthz(f.path),
+    );
+    expect(writers.every((f) => f.path.startsWith('src/modules/'))).toBe(true);
+  });
+
+  it('CSRF and cookie hygiene: no placeholder secret, hook wired, constant-time compare, one cookie definition', () => {
+    const app = readFileSync(resolve(src, 'app.ts'), 'utf8');
+    expect(stripComments(app)).not.toMatch(/fastifyCookie[^)]*secret|change_me/i);
+    expect(
+      code.filter((f) => /change_me|placeholder_secret/i.test(f.text)).map((f) => f.path),
+    ).toEqual([]);
+    const hook = stripComments(readFileSync(resolve(src, 'modules/auth/auth.hook.ts'), 'utf8'));
+    expect(hook).toMatch(/assertOrigin\(request, opts\.allowedOrigins\)/);
+    expect(hook).toMatch(/assertCsrfToken\(request, token\)/);
+    expect(hook.indexOf('assertOrigin')).toBeLessThan(hook.indexOf('validateSession')); // origin first
+    expect(readFileSync(resolve(src, 'modules/auth/csrf.ts'), 'utf8')).toMatch(/timingSafeEqual/);
+    // the session cookie's attributes are defined once and reused by set and clear
+    const routes = stripComments(readFileSync(resolve(src, 'modules/auth/auth.routes.ts'), 'utf8'));
+    expect(routes).toMatch(/clearCookie\(SESSION_COOKIE, SESSION_COOKIE_ATTRS\)/);
+    expect(routes).toMatch(/\.\.\.SESSION_COOKIE_ATTRS/);
+    expect(routes).not.toMatch(/httpOnly|sameSite|secure:/);
+    const attrs = readFileSync(resolve(src, 'modules/auth/session-cookie.ts'), 'utf8');
+    expect(attrs).toMatch(/httpOnly: true/);
+    expect(attrs).toMatch(/secure: true/);
+    expect(attrs).toMatch(/sameSite: 'lax'/);
+  });
+
+  it('state-changing routes: only login and logout are public; health exposes GET only', () => {
+    const health = readFileSync(resolve(src, 'modules/health/health.routes.ts'), 'utf8');
+    expect(health).not.toMatch(/app\.(post|put|patch|delete)\(/);
+    const auth = stripComments(readFileSync(resolve(src, 'modules/auth/auth.routes.ts'), 'utf8'));
+    const unsafePublic = [
+      ...auth.matchAll(/app\.(post|put|patch|delete)\(\s*'([^']+)'[\s\S]*?public: true/g),
+    ].map((m) => m[2]);
+    expect(unsafePublic.sort()).toEqual(['/auth/login', '/auth/logout']);
+  });
+});

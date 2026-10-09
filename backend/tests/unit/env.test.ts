@@ -35,14 +35,49 @@ describe('loadConfig', () => {
   it('requires TLS to the database in production', () => {
     expect(() => loadConfig({ ...base, NODE_ENV: 'production' })).toThrow(/DATABASE_SSL/);
     expect(() =>
-      loadConfig({ ...base, NODE_ENV: 'production', DATABASE_SSL: 'require' }),
+      loadConfig({
+        ...base,
+        NODE_ENV: 'production',
+        DATABASE_SSL: 'require',
+        APP_ORIGINS: 'https://app.example.edu',
+      }),
     ).not.toThrow();
   });
 
   it('refuses wildcard bind in production unless behind a trusted proxy', () => {
-    const prod = { ...base, NODE_ENV: 'production', DATABASE_SSL: 'require', HOST: '0.0.0.0' };
+    const prod = {
+      ...base,
+      NODE_ENV: 'production',
+      DATABASE_SSL: 'require',
+      HOST: '0.0.0.0',
+      APP_ORIGINS: 'https://app.example.edu',
+    };
     expect(() => loadConfig(prod)).toThrow(/TRUST_PROXY/);
     expect(() => loadConfig({ ...prod, TRUST_PROXY: 'true' })).not.toThrow();
+  });
+});
+
+describe('APP_ORIGINS (CSRF origin allow-list)', () => {
+  const prod = { ...base, NODE_ENV: 'production', DATABASE_SSL: 'require' };
+  it('is required in production and must be https', () => {
+    expect(() => loadConfig(prod)).toThrow(/APP_ORIGINS: required/);
+    expect(() => loadConfig({ ...prod, APP_ORIGINS: 'http://app.example.edu' })).toThrow(/https/);
+  });
+  it('parses exact origins and rejects paths, wildcards and junk (fail closed)', () => {
+    expect(
+      loadConfig({ ...base, APP_ORIGINS: 'https://a.edu, http://localhost:5173' }).allowedOrigins,
+    ).toEqual(['https://a.edu', 'http://localhost:5173']);
+    expect(loadConfig(base).allowedOrigins).toEqual([]);
+    for (const bad of [
+      '*',
+      'https://a.edu/',
+      'https://a.edu/path',
+      'a.edu',
+      'ftp://a.edu',
+      'https://*.a.edu',
+    ]) {
+      expect(() => loadConfig({ ...base, APP_ORIGINS: bad }), bad).toThrow(/APP_ORIGINS/);
+    }
   });
 });
 

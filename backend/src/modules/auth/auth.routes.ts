@@ -1,6 +1,10 @@
 import type { FastifyInstance } from 'fastify';
 import { Type } from '@sinclair/typebox';
 import type { AuthService } from './auth.service.js';
+import { AppError } from '../../shared/errors/http-errors.js';
+import { csrfTokenFor } from './csrf.js';
+import type { LoginRateLimiter } from './login-limiter.js';
+import { SESSION_COOKIE, SESSION_COOKIE_ATTRS, SESSION_MAX_AGE_SECONDS } from './session-cookie.js';
 
 interface LoginBody {
   email: string;
@@ -10,7 +14,7 @@ interface LoginBody {
 
 export function registerAuthRoutes(
   app: FastifyInstance,
-  opts: { authService?: AuthService } = {},
+  opts: { authService?: AuthService; loginLimiter?: LoginRateLimiter } = {},
 ): void {
   // If not provided, construct defaults. This assumes `app.db` doesn't exist, we usually pass `db` to modules or get it from some global context, but we can just use `app.db` if we decorate it, or we construct the service inside `buildApp`.
   // Actually, standard practice in this repo seems to be passing dependencies via options.
@@ -32,18 +36,35 @@ export function registerAuthRoutes(
       if (!authService) throw new Error('authService not provided');
       const { email, password, tenant } = request.body as LoginBody;
 
-      const result = await authService.login(email, password ?? '', tenant);
+      // Per-IP / per-(IP, account) budget, checked BEFORE any password work and independent of
+      // whether the account exists. request.ip honours X-Forwarded-For only when TRUST_PROXY is set.
+      const limiter = opts.loginLimiter;
+      const wait = limiter?.check(request.ip, email) ?? 0;
+      if (wait > 0) {
+        void reply.header('retry-after', String(wait));
+        throw new AppError(429, 'TOO_MANY_REQUESTS', 'Too many attempts. Try again later.');
+      }
 
-      // Set cookie securely
-      reply.cookie('session_token', result.sessionToken, {
-        path: '/',
-        httpOnly: true,
-        secure: true, // Assume TLS everywhere
-        sameSite: 'lax',
-        maxAge: 12 * 60 * 60, // 12 hours
+      let result;
+      try {
+        result = await authService.login(email, password ?? '', tenant);
+      } catch (err) {
+        if (err instanceof AppError && err.statusCode === 401)
+          limiter?.recordFailure(request.ip, email);
+        throw err;
+      }
+      limiter?.recordSuccess(request.ip, email);
+
+      reply.cookie(SESSION_COOKIE, result.sessionToken, {
+        ...SESSION_COOKIE_ATTRS,
+        maxAge: SESSION_MAX_AGE_SECONDS,
       });
 
-      return reply.send({ success: true, tenant_id: result.tenantId });
+      return reply.send({
+        success: true,
+        tenant_id: result.tenantId,
+        csrf_token: csrfTokenFor(result.sessionToken),
+      });
     },
   );
 
@@ -54,11 +75,11 @@ export function registerAuthRoutes(
     },
     async (request, reply) => {
       if (!authService) throw new Error('authService not provided');
-      const token = request.cookies.session_token;
+      const token = request.cookies[SESSION_COOKIE];
       if (token) {
         await authService.logout(token);
       }
-      reply.clearCookie('session_token', { path: '/' });
+      reply.clearCookie(SESSION_COOKIE, SESSION_COOKIE_ATTRS);
       return reply.send({ success: true });
     },
   );
@@ -66,10 +87,8 @@ export function registerAuthRoutes(
   app.get(
     '/auth/me',
     {
-      config: {
-        permission: 'session.read',
-        extractScope: (req) => ({ user_id: req.tenantContext!.userId }),
-      },
+      // The caller's own session only: the identity is the authenticated one, there is no target id.
+      config: { permission: 'session.read' },
     },
     async (request, reply) => {
       // This route requires authentication. Fastify hooks will run and attach the context to request.tenantContext.
@@ -83,6 +102,7 @@ export function registerAuthRoutes(
         tenant_id: ctx.tenantId,
         user_id: ctx.userId,
         actor_kind: ctx.actorKind,
+        csrf_token: csrfTokenFor(request.cookies[SESSION_COOKIE] ?? ''),
       });
     },
   );

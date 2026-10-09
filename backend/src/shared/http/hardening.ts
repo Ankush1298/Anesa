@@ -1,6 +1,6 @@
 import type { FastifyError, FastifyInstance } from 'fastify';
 import { ZodError } from 'zod';
-import { AppError, envelope } from '../errors/http-errors.js';
+import { AppError, RESOURCE_NOT_FOUND_MESSAGE, envelope } from '../errors/http-errors.js';
 
 /**
  * Baseline HTTP hardening shared by every route:
@@ -23,9 +23,7 @@ export function registerHardening(app: FastifyInstance, opts: { production: bool
   });
 
   app.setNotFoundHandler((req, reply) => {
-    void reply
-      .status(404)
-      .send(envelope(req.id, 'RESOURCE_NOT_FOUND', 'The requested resource was not found.'));
+    void reply.status(404).send(envelope(req.id, 'RESOURCE_NOT_FOUND', RESOURCE_NOT_FOUND_MESSAGE));
   });
 
   app.setErrorHandler((err: FastifyError | AppError | ZodError, req, reply) => {

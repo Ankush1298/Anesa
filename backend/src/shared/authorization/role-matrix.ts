@@ -1,73 +1,86 @@
-import type { ScopeMode } from './catalog.js';
+import type { ScopeMode, ScopeType } from './catalog.js';
 
-export type RoleCode =
-  | 'STUDENT'
-  | 'FACULTY'
-  | 'STAFF'
-  | 'HOD'
-  | 'DEPARTMENT_ADMIN'
-  | 'CAMPUS_ADMIN'
-  | 'COLLEGE_ADMIN'
-  | 'REGISTRAR';
+export const ROLE_CODES = [
+  'STUDENT',
+  'FACULTY',
+  'STAFF',
+  'HOD',
+  'DEPARTMENT_ADMIN',
+  'CAMPUS_ADMIN',
+  'COLLEGE_ADMIN',
+  'REGISTRAR',
+] as const;
+export type RoleCode = (typeof ROLE_CODES)[number];
 
+const SESSION: Record<string, ScopeMode> = { 'session.read': 'SELF', 'session.revoke': 'SELF' };
+
+/** Mirrors docs/architecture/v3/10 §1 (a test parses the document and compares). */
 export const ROLE_MATRIX: Record<RoleCode, Record<string, ScopeMode>> = {
   STUDENT: {
-    'session.read': 'SELF',
-    'session.revoke': 'SELF',
+    ...SESSION,
     'student.profile.read': 'SELF',
     'student.profile.read_sensitive': 'SELF',
-    'student.profile.update': 'SELF',
-    'attendance.session.read': 'SELF',
   },
-  FACULTY: {
-    'session.read': 'SELF',
-    'session.revoke': 'SELF',
-    'student.profile.read': 'ASSIGNED',
-    'attendance.session.read': 'ASSIGNED',
-    'attendance.session.mark': 'ASSIGNED',
-  },
-  STAFF: {
-    'session.read': 'SELF',
-    'session.revoke': 'SELF',
-  },
-  HOD: {
-    'session.read': 'SELF',
-    'session.revoke': 'SELF',
-    'student.profile.read': 'GRANTED',
-  },
+  // student.profile.read (ASSIGNED) is deliberately NOT seeded until the M3 resolver exists (doc 10 ¹).
+  FACULTY: { ...SESSION },
+  STAFF: { ...SESSION },
+  HOD: { ...SESSION, 'student.profile.read': 'GRANTED' },
   DEPARTMENT_ADMIN: {
-    'session.read': 'SELF',
-    'session.revoke': 'SELF',
+    ...SESSION,
     'student.profile.read': 'GRANTED',
+    'student.profile.read_sensitive': 'GRANTED',
+    'role.assignment.grant': 'GRANTED',
+    'role.assignment.revoke': 'GRANTED',
   },
   CAMPUS_ADMIN: {
-    'session.read': 'SELF',
-    'session.revoke': 'SELF',
+    ...SESSION,
     'session.revoke_any': 'GRANTED',
     'student.profile.read': 'GRANTED',
     'student.profile.read_sensitive': 'GRANTED',
+    'org.campus.manage': 'GRANTED',
     'org.department.manage': 'GRANTED',
+    'org.settings.read': 'GRANTED',
     'role.assignment.grant': 'GRANTED',
     'role.assignment.revoke': 'GRANTED',
   },
   COLLEGE_ADMIN: {
-    'session.read': 'SELF',
-    'session.revoke': 'SELF',
+    ...SESSION,
     'session.revoke_any': 'GRANTED',
     'student.profile.read': 'GRANTED',
     'student.profile.read_sensitive': 'GRANTED',
-    'org.department.manage': 'GRANTED',
     'org.campus.manage': 'GRANTED',
+    'org.department.manage': 'GRANTED',
     'org.settings.read': 'GRANTED',
     'role.assignment.grant': 'GRANTED',
     'role.assignment.revoke': 'GRANTED',
   },
   REGISTRAR: {
-    'session.read': 'SELF',
-    'session.revoke': 'SELF',
+    ...SESSION,
     'student.profile.read': 'GRANTED',
     'student.profile.read_sensitive': 'GRANTED',
-    'org.department.manage': 'GRANTED',
     'org.settings.read': 'GRANTED',
   },
 };
+
+/** Which assignment scope types make sense for a role (06 §5(d): e.g. HOD requires DEPARTMENT). */
+export const ROLE_SCOPE_TYPES: Record<RoleCode, readonly ScopeType[]> = {
+  STUDENT: ['ORGANIZATION'],
+  FACULTY: ['ORGANIZATION', 'CAMPUS', 'DEPARTMENT'],
+  STAFF: ['ORGANIZATION', 'CAMPUS', 'DEPARTMENT'],
+  HOD: ['DEPARTMENT'],
+  DEPARTMENT_ADMIN: ['DEPARTMENT'],
+  CAMPUS_ADMIN: ['CAMPUS'],
+  COLLEGE_ADMIN: ['ORGANIZATION'],
+  REGISTRAR: ['ORGANIZATION', 'CAMPUS'],
+};
+
+/** (grantor role → grantable roles), 06 §5. Nobody but COLLEGE_ADMIN may grant COLLEGE_ADMIN. */
+export const GRANT_RULES: Record<string, readonly RoleCode[]> = {
+  COLLEGE_ADMIN: ROLE_CODES,
+  CAMPUS_ADMIN: ['DEPARTMENT_ADMIN', 'HOD', 'FACULTY', 'STAFF'],
+  DEPARTMENT_ADMIN: ['FACULTY', 'STAFF'],
+};
+
+export function isRoleCode(value: string): value is RoleCode {
+  return (ROLE_CODES as readonly string[]).includes(value);
+}

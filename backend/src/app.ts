@@ -7,9 +7,11 @@ import { loggerOptions, type AppLoggerOptions } from './shared/logging/logger-op
 import fastifyCookie from '@fastify/cookie';
 import authHook from './modules/auth/auth.hook.js';
 import { registerAuthRoutes } from './modules/auth/auth.routes.js';
+import { LoginRateLimiter } from './modules/auth/login-limiter.js';
 import { AuthService } from './modules/auth/auth.service.js';
 import { AuthRepository } from './modules/auth/auth.repository.js';
 import type { Database } from './shared/database/index.js';
+import { PERMISSION_CODES } from './shared/authorization/catalog.js';
 
 declare module 'fastify' {
   interface FastifyContextConfig {
@@ -23,6 +25,8 @@ export interface AppDeps {
   db: Database;
   /** Tests may pass `false` to silence logs or a custom pino-compatible stream via logger options. */
   logger?: AppLoggerOptions | false;
+  /** Tests inject a limiter with a fake clock; production uses the default. */
+  loginLimiter?: LoginRateLimiter;
 }
 
 export function buildApp(deps: AppDeps): FastifyInstance {
@@ -36,21 +40,33 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     bodyLimit: 1_048_576,
   });
 
+  // Route coverage (06 §2 step 5, 10 §4.1): every route is either on the explicit public allowlist
+  // or names exactly one permission from the central catalog. Violations fail at boot, not at runtime.
+  app.addHook('onRoute', (route) => {
+    const cfg = route.config as { public?: boolean; permission?: string } | undefined;
+    if (cfg?.public === true) return;
+    if (!cfg?.permission || !PERMISSION_CODES.has(cfg.permission)) {
+      throw new Error(`Route ${route.method.toString()} ${route.url} has no catalogued permission`);
+    }
+  });
+
   registerHardening(app, { production: config.env === 'production' });
 
-  // Register fastify-cookie
-  app.register(fastifyCookie, {
-    secret: 'change_me_session_secret',
-  });
+  // No `secret`: the session cookie is an opaque random token looked up by its SHA-256 hash, so
+  // cookie signing would add nothing. (A placeholder secret would only pretend to.)
+  app.register(fastifyCookie);
 
   const authRepository = new AuthRepository();
   const authService = new AuthService(deps.db, authRepository);
 
   // Register auth hook to protect routes
-  app.register(authHook, { authService, db: deps.db });
+  app.register(authHook, { authService, db: deps.db, allowedOrigins: config.allowedOrigins });
 
   registerHealthRoutes(app, { db: deps.db });
-  registerAuthRoutes(app, { authService });
+  registerAuthRoutes(app, {
+    authService,
+    loginLimiter: deps.loginLimiter ?? new LoginRateLimiter(),
+  });
 
   return app;
 }

@@ -14,7 +14,7 @@ export class AuthService {
 
   async login(email: string, passwordPlain: string, selectedTenantSlug?: string) {
     // 1. Locate identity safely (without tenant context yet, as they are logging in)
-    return this.db.withSystem(async (tx) => {
+    const result = await this.db.withSystem(async (tx) => {
       const identity = await this.repo.findIdentityByEmail(tx, email);
 
       // Enumeration resistance: we do the argon2 verify EVEN if identity is null
@@ -28,8 +28,10 @@ export class AuthService {
       );
 
       if (!identity || !isPasswordValid) {
+        // Return (don't throw) so the failure counter COMMITS; a throw would roll it back and the
+        // lockout could never trigger. The caller raises the error after the transaction.
         if (identity) await this.repo.recordFailedLogin(tx, identity.id);
-        throw new AppError(401, 'INVALID_CREDENTIALS', 'Invalid credentials');
+        return null;
       }
 
       if (identity.locked_until && identity.locked_until > new Date()) {
@@ -83,6 +85,8 @@ export class AuthService {
         userId: activeMembership.user_id, // tenant-scoped membership id
       };
     });
+    if (!result) throw new AppError(401, 'INVALID_CREDENTIALS', 'Invalid credentials');
+    return result;
   }
 
   async logout(rawToken: string): Promise<void> {
@@ -97,7 +101,7 @@ export class AuthService {
 
   async validateSession(rawToken: string): Promise<TrustedContext> {
     const hashed = hashToken(rawToken);
-    return this.db.withSystem(async (tx) => {
+    const base = await this.db.withSystem(async (tx) => {
       const session = await this.repo.findSessionByToken(tx, hashed);
 
       if (!session) {
@@ -123,18 +127,23 @@ export class AuthService {
       }
       const userId = activeMembership.user_id;
 
-      // Check if user is staff or student for actorKind
-      let actorKind: 'STAFF' | 'STUDENT' = 'STAFF'; // Defaulting to staff unless we detect student row
-      const isStudent = await tx.query('SELECT 1 FROM app.students WHERE user_id = $1', [userId]);
-      if (isStudent.rowCount && isStudent.rowCount > 0) {
-        actorKind = 'STUDENT';
-      }
-
-      return issueTrustedContext({
-        tenantId: session.tenant_id,
-        userId: userId,
-        actorKind,
-      });
+      return { tenantId: session.tenant_id, userId };
     });
+
+    return this.resolveContext(base.tenantId, base.userId);
+  }
+
+  /**
+   * actor_kind comes from the student mapping, read inside the tenant (RLS hides app.students from a
+   * tenant-less connection). The probe context is STUDENT-kind on purpose: it is the *least*
+   * privileged kind, so it can only ever see the user's own student row.
+   */
+  private async resolveContext(tenantId: string, userId: string): Promise<TrustedContext> {
+    const probe = issueTrustedContext({ tenantId, userId, actorKind: 'STUDENT' });
+    const isStudent = await this.db.withTenant(probe, async (tx) => {
+      const r = await tx.query('SELECT 1 FROM app.students WHERE user_id = $1', [userId]);
+      return (r.rowCount ?? 0) > 0;
+    });
+    return issueTrustedContext({ tenantId, userId, actorKind: isStudent ? 'STUDENT' : 'STAFF' });
   }
 }

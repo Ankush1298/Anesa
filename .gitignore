@@ -24,3 +24,6 @@ secrets/
 .idea/
 .vscode/*
 !.vscode/extensions.json
+
+# generated knowledge-graph output (graphify); rebuild with /graphify, not needed by app or CI
+graphify-out/

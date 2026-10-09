@@ -1,4 +1,5 @@
 import pg from 'pg';
+import { seedTenantRoles } from '../../src/shared/authorization/seed.js';
 
 /**
  * Deterministic security fixtures (all UUIDv7-shaped). Relationships:
@@ -25,6 +26,42 @@ export const GUARDIAN_A = '01939a00-0000-7000-8000-00000000a601';
 export const GUARDIAN_B = '01939a00-0000-7000-8000-00000000a602';
 export const GUARDIAN_C = '01939a00-0000-7000-8000-00000000b601';
 
+export const FACULTY_A = '01939a00-0000-7000-8000-00000000aa04';
+export const HOD_A = '01939a00-0000-7000-8000-00000000aa05';
+export const CAMPUS_ADMIN_A = '01939a00-0000-7000-8000-00000000aa06';
+export const NOROLE_A = '01939a00-0000-7000-8000-00000000aa07';
+/** Holds no assignment; tests give it assignments in various states and clean up. */
+export const TEMP_A = '01939a00-0000-7000-8000-00000000aa08';
+/** Dedicated to the database-lock test so parallel test files never share a locked identity. */
+export const LOCK_A = '01939a00-0000-7000-8000-00000000aa09';
+/** Grant/revoke target for the (rolled-back) assignment-service tests; no other test touches it. */
+export const GRANTEE_A = '01939a00-0000-7000-8000-00000000aa0a';
+export const EXTRA_A_USER_IDS = [
+  FACULTY_A,
+  HOD_A,
+  CAMPUS_ADMIN_A,
+  NOROLE_A,
+  TEMP_A,
+  LOCK_A,
+  GRANTEE_A,
+];
+const EXTRA_A_USERS: [string, string][] = [
+  [FACULTY_A, 'faculty.a@college-a.test'],
+  [HOD_A, 'hod.a@college-a.test'],
+  [CAMPUS_ADMIN_A, 'campus.admin.a@college-a.test'],
+  [NOROLE_A, 'norole.a@college-a.test'],
+  [TEMP_A, 'temp.a@college-a.test'],
+  [LOCK_A, 'lock.a@college-a.test'],
+  [GRANTEE_A, 'grantee.a@college-a.test'],
+];
+
+/** Scope identifiers. No campus/department tables exist yet; these are opaque, trusted scope ids. */
+export const CAMPUS_1 = '01939a00-0000-7000-8000-00000000ca01';
+export const CAMPUS_2 = '01939a00-0000-7000-8000-00000000ca02';
+export const DEPT_1 = '01939a00-0000-7000-8000-00000000de01'; // in CAMPUS_1
+export const DEPT_2 = '01939a00-0000-7000-8000-00000000de02'; // in CAMPUS_1
+export const DEPT_3 = '01939a00-0000-7000-8000-00000000de03'; // in CAMPUS_2
+
 /** Tenant C exists only for tests that COMMIT writes, so they cannot disturb the A/B assertions. */
 export const ORG_C = '01939a00-0000-7000-8000-000000000c01';
 export const STAFF_C = '01939a00-0000-7000-8000-00000000cc03';
@@ -42,6 +79,11 @@ export const CTX = {
   studentC: { tenant: ORG_B, user: USER_B, kind: 'STUDENT' },
   staffB: { tenant: ORG_B, user: STAFF_B, kind: 'STAFF' },
   staffC: { tenant: ORG_C, user: STAFF_C, kind: 'STAFF' },
+  facultyA: { tenant: ORG_A, user: FACULTY_A, kind: 'STAFF' },
+  hodA: { tenant: ORG_A, user: HOD_A, kind: 'STAFF' },
+  campusAdminA: { tenant: ORG_A, user: CAMPUS_ADMIN_A, kind: 'STAFF' },
+  noroleA: { tenant: ORG_A, user: NOROLE_A, kind: 'STAFF' },
+  tempA: { tenant: ORG_A, user: TEMP_A, kind: 'STAFF' },
 } as const satisfies Record<string, Ctx>;
 
 /** A well-formed UUIDv7 that exists nowhere. */
@@ -107,68 +149,55 @@ export async function seedFixtures(adminUrl: string): Promise<void> {
       [STAFF_C, ORG_C],
     );
 
-    // Roles and permissions
-    for (const org of [ORG_A, ORG_B]) {
-      const p = org === ORG_A ? 'a' : 'b';
-      const roleStudent = `01939a00-0000-7000-8000-00000000${p}701`;
-      const roleFaculty = `01939a00-0000-7000-8000-00000000${p}702`;
-      const roleAdmin = `01939a00-0000-7000-8000-00000000${p}703`;
-
-      // Seed roles for each org
-      await c.query(`
-        INSERT INTO app.roles (id, organization_id, code, name) VALUES
-          ('${roleStudent}', '${org}', 'STUDENT', 'STUDENT'),
-          ('${roleFaculty}', '${org}', 'FACULTY', 'FACULTY'),
-          ('${roleAdmin}', '${org}', 'CAMPUS_ADMIN', 'CAMPUS_ADMIN')
-      `);
-
-      await c.query(`
-        INSERT INTO app.role_permissions (organization_id, role_id, permission_code, scope_mode)
-        VALUES ('${org}', '${roleStudent}', 'student.profile.read', 'SELF')
-      `);
-      await c.query(`
-        INSERT INTO app.role_permissions (organization_id, role_id, permission_code, scope_mode)
-        VALUES ('${org}', '${roleStudent}', 'session.read', 'SELF')
-      `);
-      await c.query(`
-        INSERT INTO app.role_permissions (organization_id, role_id, permission_code, scope_mode)
-        VALUES ('${org}', '${roleFaculty}', 'attendance.session.mark', 'ASSIGNED')
-      `);
-      await c.query(`
-        INSERT INTO app.role_permissions (organization_id, role_id, permission_code, scope_mode)
-        VALUES ('${org}', '${roleFaculty}', 'session.read', 'SELF')
-      `);
-      await c.query(`
-        INSERT INTO app.role_permissions (organization_id, role_id, permission_code, scope_mode)
-        VALUES ('${org}', '${roleAdmin}', 'student.profile.read', 'GRANTED')
-      `);
-      await c.query(`
-        INSERT INTO app.role_permissions (organization_id, role_id, permission_code, scope_mode)
-        VALUES ('${org}', '${roleAdmin}', 'role.assignment.grant', 'GRANTED')
-      `);
-      await c.query(`
-        INSERT INTO app.role_permissions (organization_id, role_id, permission_code, scope_mode)
-        VALUES ('${org}', '${roleAdmin}', 'role.assignment.revoke', 'GRANTED')
-      `);
-      await c.query(`
-        INSERT INTO app.role_permissions (organization_id, role_id, permission_code, scope_mode)
-        VALUES ('${org}', '${roleAdmin}', 'session.read', 'SELF')
-      `);
+    // Extra ORG_A principals for the authorization matrix (identity + user + assignment each).
+    for (const [id, email] of EXTRA_A_USERS) {
+      await c.query(
+        `INSERT INTO platform.identities (id, email, password_hash, status) VALUES ($1, $2, 'test-hash', 'ACTIVE')`,
+        [id, email],
+      );
+      await c.query(
+        `INSERT INTO app.users (id, organization_id, email, display_name, status, identity_id) VALUES ($1, $2, $3, $3, 'ACTIVE', $1)`,
+        [id, ORG_A, email],
+      );
     }
 
-    // Role Assignments
-    await c.query(`
-      INSERT INTO app.role_assignments (id, organization_id, user_id, role_id, scope_type)
-      VALUES ('01939a00-0000-7000-8000-00000000a801', '${ORG_A}', '${USER_A}', '01939a00-0000-7000-8000-00000000a701', 'ORGANIZATION')
-    `);
-    await c.query(`
-      INSERT INTO app.role_assignments (id, organization_id, user_id, role_id, scope_type)
-      VALUES ('01939a00-0000-7000-8000-00000000a802', '${ORG_A}', '${STAFF_A}', '01939a00-0000-7000-8000-00000000a703', 'ORGANIZATION')
-    `);
-    await c.query(`
-      INSERT INTO app.role_assignments (id, organization_id, user_id, role_id, scope_type)
-      VALUES ('01939a00-0000-7000-8000-00000000b801', '${ORG_B}', '${USER_B}', '01939a00-0000-7000-8000-00000000b701', 'ORGANIZATION')
-    `);
+    // Roles come from the REAL seeder, so the tests exercise the real matrix.
+    const exec = {
+      query: (text: string, values?: readonly unknown[]) => c.query(text, [...(values ?? [])]),
+    };
+    for (const org of [ORG_A, ORG_B, ORG_C]) await seedTenantRoles(exec, org);
+
+    const assign = async (
+      org: string,
+      user: string,
+      role: string,
+      scopeType: string,
+      scopeId: string | null,
+      n: number,
+    ): Promise<void> => {
+      await c.query(
+        `INSERT INTO app.role_assignments (id, organization_id, user_id, role_id, scope_type, scope_id)
+         SELECT $1::uuid, $2::uuid, $3::uuid, r.id, $5, $6::uuid FROM app.roles r WHERE r.organization_id = $2::uuid AND r.code = $4`,
+        [
+          `01939a00-0000-7000-8000-00000000d${String(n).padStart(3, '0')}`,
+          org,
+          user,
+          role,
+          scopeType,
+          scopeId,
+        ],
+      );
+    };
+    await assign(ORG_A, USER_A, 'STUDENT', 'ORGANIZATION', null, 1);
+    await assign(ORG_A, USER_A2, 'STUDENT', 'ORGANIZATION', null, 2);
+    await assign(ORG_A, STAFF_A, 'COLLEGE_ADMIN', 'ORGANIZATION', null, 3);
+    await assign(ORG_A, FACULTY_A, 'FACULTY', 'ORGANIZATION', null, 4);
+    await assign(ORG_A, HOD_A, 'HOD', 'DEPARTMENT', DEPT_1, 5);
+    await assign(ORG_A, CAMPUS_ADMIN_A, 'CAMPUS_ADMIN', 'CAMPUS', CAMPUS_1, 6);
+    await assign(ORG_B, USER_B, 'STUDENT', 'ORGANIZATION', null, 7);
+    await assign(ORG_B, STAFF_B, 'COLLEGE_ADMIN', 'ORGANIZATION', null, 8);
+    await assign(ORG_C, STAFF_C, 'COLLEGE_ADMIN', 'ORGANIZATION', null, 9);
+    // NOROLE_A and TEMP_A deliberately hold no assignment.
 
     await c.query('COMMIT');
   } catch (err) {

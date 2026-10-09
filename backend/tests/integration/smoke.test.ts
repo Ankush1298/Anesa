@@ -5,7 +5,7 @@ import { Database } from '../../src/shared/database/index.js';
 import { createPool } from '../../src/shared/database/pool.js';
 import { adminQuery } from '../support/db-harness.js';
 import * as argon2 from 'argon2';
-import { ORG_A, ORG_B, STAFF_A, USER_A, USER_B } from '../support/fixtures.js';
+import { EXTRA_A_USER_IDS, ORG_A, ORG_B, STAFF_A, USER_A, USER_B } from '../support/fixtures.js';
 
 import type { Pool } from 'pg';
 
@@ -252,7 +252,11 @@ describe('End-to-End Authentication Smoke Test', () => {
     const users = res.json<{ users: { id: string }[] }>().users;
     expect(users.length).toBeGreaterThan(0);
     for (const u of users) {
-      expect([USER_A, STAFF_A, '01939a00-0000-7000-8000-00000000aa02'].includes(u.id)).toBe(true);
+      expect(
+        [USER_A, STAFF_A, '01939a00-0000-7000-8000-00000000aa02', ...EXTRA_A_USER_IDS].includes(
+          u.id,
+        ),
+      ).toBe(true);
     }
   });
 });

@@ -11,6 +11,7 @@ import {
   STUDENT_A,
   STUDENT_B,
   STUDENT_C,
+  EXTRA_A_USER_IDS,
   USER_A,
   USER_A2,
   USER_B,
@@ -40,7 +41,7 @@ describe('Tenant isolation — reads', () => {
       sorted(STUDENT_A, STUDENT_B),
     );
     expect(ids(await runAs(CTX.staffA, 'SELECT id FROM app.users'))).toEqual(
-      sorted(USER_A, USER_A2, STAFF_A),
+      sorted(USER_A, USER_A2, STAFF_A, ...EXTRA_A_USER_IDS),
     );
     expect(ids(await runAs(CTX.staffA, 'SELECT id FROM app.student_guardians'))).toEqual(
       sorted(GUARDIAN_A, GUARDIAN_B),

@@ -28,3 +28,12 @@ export function envelope(
     error: { code, message, requestId, ...(details ? { details } : {}) },
   };
 }
+
+/**
+ * The ONE 404 used for "does not exist" and for "exists but you may not discover it" (06 §2 step 8).
+ * Same status, code and message everywhere, so the two cases are indistinguishable to a client.
+ */
+export const RESOURCE_NOT_FOUND_MESSAGE = 'The requested resource was not found.';
+export function resourceNotFound(): AppError {
+  return new AppError(404, 'RESOURCE_NOT_FOUND', RESOURCE_NOT_FOUND_MESSAGE);
+}
