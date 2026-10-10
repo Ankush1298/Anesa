@@ -4,6 +4,9 @@ import { AppError } from '../../shared/errors/http-errors.js';
 import type { AuditRequestMeta } from '../../shared/audit/index.js';
 import { CampusService } from './campus.service.js';
 import { DepartmentService } from './department.service.js';
+import { DesignationService } from './designation.service.js';
+import { SettingsService } from './settings.service.js';
+import { computeCollectionETag, parseIfMatch } from '../../shared/settings/index.js';
 import {
   CampusParamsSchema,
   type CampusParams,
@@ -11,6 +14,9 @@ import {
   type CreateCampusBody,
   CreateCampusResponseSchema,
   GetCampusResponseSchema,
+  ListCampusesQuerySchema,
+  type ListCampusesQuery,
+  ListCampusesResponseSchema,
   UpdateCampusBodySchema,
   type UpdateCampusBody,
   UpdateCampusResponseSchema,
@@ -20,10 +26,25 @@ import {
   type CreateDepartmentBody,
   CreateDepartmentResponseSchema,
   GetDepartmentResponseSchema,
+  ListDepartmentsQuerySchema,
+  type ListDepartmentsQuery,
+  ListDepartmentsResponseSchema,
   UpdateDepartmentBodySchema,
   type UpdateDepartmentBody,
   UpdateDepartmentResponseSchema,
   DeleteDepartmentResponseSchema,
+  CreateDesignationBodySchema,
+  type CreateDesignationBody,
+  CreateDesignationResponseSchema,
+  ListDesignationsQuerySchema,
+  type ListDesignationsQuery,
+  ListDesignationsResponseSchema,
+  SettingParamsSchema,
+  type SettingParams,
+  SetSettingBodySchema,
+  type SetSettingBody,
+  ListSettingsResponseSchema,
+  SetSettingResponseSchema,
 } from './organization.schemas.js';
 
 function extractAuditMeta(req: FastifyRequest): AuditRequestMeta {
@@ -74,11 +95,35 @@ export const registerOrganizationRoutes: FastifyPluginAsync<{ db: Database }> = 
     },
   );
 
+  // GET /campuses
+  app.get<{ Querystring: ListCampusesQuery }>(
+    '/campuses',
+    {
+      config: { permission: ['org.structure.read', 'org.campus.manage'] },
+      schema: {
+        querystring: ListCampusesQuerySchema,
+        response: {
+          200: ListCampusesResponseSchema,
+        },
+      },
+    },
+    async (req, reply) => {
+      const ctx = req.tenantContext;
+      if (!ctx) throw new AppError(401, 'UNAUTHORIZED', 'Authentication required.');
+
+      const records = await opts.db.withTenant(ctx, async (tx) => {
+        return CampusService.list(tx, ctx, req.query);
+      });
+
+      return reply.status(200).send({ success: true, data: records });
+    },
+  );
+
   // GET /campuses/:id
   app.get<{ Params: CampusParams }>(
     '/campuses/:id',
     {
-      config: { permission: 'org.campus.manage' },
+      config: { permission: ['org.structure.read', 'org.campus.manage'] },
       schema: {
         params: CampusParamsSchema,
         response: {
@@ -151,11 +196,35 @@ export const registerOrganizationRoutes: FastifyPluginAsync<{ db: Database }> = 
     },
   );
 
+  // GET /departments
+  app.get<{ Querystring: ListDepartmentsQuery }>(
+    '/departments',
+    {
+      config: { permission: ['org.structure.read', 'org.department.manage'] },
+      schema: {
+        querystring: ListDepartmentsQuerySchema,
+        response: {
+          200: ListDepartmentsResponseSchema,
+        },
+      },
+    },
+    async (req, reply) => {
+      const ctx = req.tenantContext;
+      if (!ctx) throw new AppError(401, 'UNAUTHORIZED', 'Authentication required.');
+
+      const records = await opts.db.withTenant(ctx, async (tx) => {
+        return DepartmentService.list(tx, ctx, req.query);
+      });
+
+      return reply.status(200).send({ success: true, data: records });
+    },
+  );
+
   // GET /departments/:id
   app.get<{ Params: DepartmentParams }>(
     '/departments/:id',
     {
-      config: { permission: 'org.department.manage' },
+      config: { permission: ['org.structure.read', 'org.department.manage'] },
       schema: {
         params: DepartmentParamsSchema,
         response: {
@@ -223,6 +292,112 @@ export const registerOrganizationRoutes: FastifyPluginAsync<{ db: Database }> = 
       });
 
       return reply.status(200).send({ success: true });
+    },
+  );
+
+  // --- Designations ---
+
+  // GET /designations
+  app.get<{ Querystring: ListDesignationsQuery }>(
+    '/designations',
+    {
+      config: {
+        permission: ['org.structure.read', 'org.campus.manage', 'org.department.manage'],
+      },
+      schema: {
+        querystring: ListDesignationsQuerySchema,
+        response: {
+          200: ListDesignationsResponseSchema,
+        },
+      },
+    },
+    async (req, reply) => {
+      const ctx = req.tenantContext;
+      if (!ctx) throw new AppError(401, 'UNAUTHORIZED', 'Authentication required.');
+
+      const data = await opts.db.withTenant(ctx, async (tx) => {
+        return DesignationService.list(tx, ctx, req.query ?? {});
+      });
+
+      return reply.status(200).send({ success: true, data });
+    },
+  );
+
+  // POST /designations
+  app.post<{ Body: CreateDesignationBody }>(
+    '/designations',
+    {
+      config: { permission: ['org.campus.manage', 'org.department.manage'] },
+      schema: {
+        body: CreateDesignationBodySchema,
+        response: {
+          201: CreateDesignationResponseSchema,
+        },
+      },
+    },
+    async (req, reply) => {
+      const ctx = req.tenantContext;
+      if (!ctx) throw new AppError(401, 'UNAUTHORIZED', 'Authentication required.');
+      const meta = extractAuditMeta(req);
+
+      const id = await opts.db.withTenant(ctx, async (tx) => {
+        return DesignationService.create(tx, ctx, req.body, meta);
+      });
+
+      return reply.status(201).send({ success: true, data: { id } });
+    },
+  );
+
+  // --- Settings (docs/architecture/v3/11 §5.4: GET /settings, PUT /settings/{key}) ---
+
+  // GET /settings
+  app.get(
+    '/settings',
+    {
+      config: { permission: 'org.settings.read' },
+      schema: { response: { 200: ListSettingsResponseSchema } },
+    },
+    async (req, reply) => {
+      const ctx = req.tenantContext;
+      if (!ctx) throw new AppError(401, 'UNAUTHORIZED', 'Authentication required.');
+
+      const data = await opts.db.withTenant(ctx, async (tx) => {
+        return SettingsService.list(tx, ctx);
+      });
+
+      reply.header('ETag', computeCollectionETag(data));
+      return reply.status(200).send({ success: true, data });
+    },
+  );
+
+  // PUT /settings/:key  (CRITICAL: org.settings.manage, reason required, audited atomically, optimistic concurrency)
+  app.put<{ Params: SettingParams; Body: SetSettingBody }>(
+    '/settings/:key',
+    {
+      config: { permission: 'org.settings.manage' },
+      schema: {
+        params: SettingParamsSchema,
+        body: SetSettingBodySchema,
+        response: { 200: SetSettingResponseSchema },
+      },
+    },
+    async (req, reply) => {
+      const ctx = req.tenantContext;
+      if (!ctx) throw new AppError(401, 'UNAUTHORIZED', 'Authentication required.');
+      const ifMatchHeader = req.headers['if-match'];
+      const expectedVersion = parseIfMatch(
+        typeof ifMatchHeader === 'string' ? ifMatchHeader : undefined,
+      );
+      const meta = extractAuditMeta(req);
+
+      const data = await opts.db.withTenant(ctx, async (tx) => {
+        return SettingsService.set(tx, ctx, req.params.key, req.body, { expectedVersion, meta });
+      });
+
+      if (data.version !== null) {
+        reply.header('ETag', `"${data.version}"`);
+      }
+      return reply.status(200).send({ success: true, data });
     },
   );
 };

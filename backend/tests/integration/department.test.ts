@@ -16,6 +16,7 @@ import {
   CAMPUS_B1,
   CTX,
   DEPT_1,
+  DEPT_2,
   DEPT_3,
   DEPT_B1,
   ORG_A,
@@ -415,14 +416,67 @@ describe('DepartmentService.getById: self-authorizing (direct calls, no route)',
     });
   });
 
-  it('callers without org.department.manage get 403, before any lookup', async () => {
-    for (const actor of [CTX.facultyA, CTX.hodA, CTX.studentA, CTX.noroleA]) {
+  it('callers without read or manage permission receive 403, before any lookup', async () => {
+    await scratch(CTX.noroleA, async (tx, ctx) => {
+      expect(await status(DepartmentService.getById(tx, ctx, DEPT_1)), CTX.noroleA.user).toBe(403);
+      // Same answer for an unknown id: a caller without permission cannot probe for existence.
+      expect(await status(DepartmentService.getById(tx, ctx, UNKNOWN_V7)), CTX.noroleA.user).toBe(
+        403,
+      );
+    });
+  });
+
+  it('STUDENT and FACULTY (organization-scoped) can read departments across campuses', async () => {
+    for (const actor of [CTX.studentA, CTX.facultyA]) {
       await scratch(actor, async (tx, ctx) => {
-        expect(await status(DepartmentService.getById(tx, ctx, DEPT_1)), actor.user).toBe(403);
-        // Same answer for an unknown id: a caller without the permission cannot probe for existence.
-        expect(await status(DepartmentService.getById(tx, ctx, UNKNOWN_V7)), actor.user).toBe(403);
+        expect((await DepartmentService.getById(tx, ctx, DEPT_1)).campusId).toBe(CAMPUS_1);
+        expect((await DepartmentService.getById(tx, ctx, DEPT_3)).campusId).toBe(CAMPUS_2);
       });
     }
+  });
+
+  it('HOD (department-scoped to DEPT_1) can read DEPT_1, but gets 404 for DEPT_2 and DEPT_3', async () => {
+    await scratch(CTX.hodA, async (tx, ctx) => {
+      expect((await DepartmentService.getById(tx, ctx, DEPT_1)).id).toBe(DEPT_1);
+      const outOfScopeSameCampus = await errOf(DepartmentService.getById(tx, ctx, DEPT_2));
+      const outOfScopeDiffCampus = await errOf(DepartmentService.getById(tx, ctx, DEPT_3));
+      const unknown = await errOf(DepartmentService.getById(tx, ctx, UNKNOWN_V7));
+      expect(outOfScopeSameCampus.statusCode).toBe(404);
+      expect(outOfScopeSameCampus.code).toBe(unknown.code);
+      expect(outOfScopeSameCampus.message).toBe(unknown.message);
+      expect(outOfScopeDiffCampus.statusCode).toBe(404);
+      expect(outOfScopeDiffCampus.code).toBe(unknown.code);
+      expect(outOfScopeDiffCampus.message).toBe(unknown.message);
+    });
+  });
+
+  it('inactive or soft-deleted department returns 404 to non-managers but is readable by managers', async () => {
+    await scratch(CTX.staffA, async (tx, ctx) => {
+      const did = await DepartmentService.create(
+        tx,
+        ctx,
+        dept({ code: 'INACT_DEPT', name: 'Inactive Dept' }),
+      );
+      await DepartmentService.update(tx, ctx, did, { status: 'INACTIVE' });
+
+      // Manager reads inactive department: 200
+      expect((await DepartmentService.getById(tx, ctx, did)).status).toBe('INACTIVE');
+
+      // Non-manager student gets 404
+      const studentCtx = ctxOf(CTX.studentA);
+      expect(await status(DepartmentService.getById(tx, studentCtx, did))).toBe(404);
+
+      // Now soft-delete
+      await DepartmentService.softDelete(tx, ctx, did);
+
+      // Manager reads soft-deleted department: 200
+      const managerRead = await DepartmentService.getById(tx, ctx, did);
+      expect(managerRead.status).toBe('INACTIVE');
+      expect(managerRead.deletedAt).not.toBeNull();
+
+      // Non-manager student still gets 404
+      expect(await status(DepartmentService.getById(tx, studentCtx, did))).toBe(404);
+    });
   });
 
   it('campus admin cannot read a department of another campus: 404, identical to an unknown id', async () => {
@@ -451,6 +505,77 @@ describe('DepartmentService.getById: self-authorizing (direct calls, no route)',
     await scratch(CTX.staffA, async (tx, ctx) => {
       expect(await status(DepartmentService.getById(tx, ctx, 'nope'))).toBe(400);
       expect(await status(DepartmentService.getById(tx, { ...ctx }, DEPT_1))).toBe(500);
+    });
+  });
+});
+
+describe('DepartmentService.list: scoping, filters, and inactive shielding', () => {
+  it('STUDENT receives all active, non-deleted departments in their tenant', async () => {
+    await scratch(CTX.studentA, async (tx, ctx) => {
+      const list = await DepartmentService.list(tx, ctx);
+      expect(list.some((d) => d.id === DEPT_1)).toBe(true);
+      expect(list.some((d) => d.id === DEPT_3)).toBe(true);
+      expect(list.every((d) => d.organizationId === ORG_A)).toBe(true);
+      expect(list.every((d) => d.status === 'ACTIVE')).toBe(true);
+      expect(list.every((d) => d.deletedAt === null)).toBe(true);
+    });
+  });
+
+  it('CAMPUS_ADMIN receives only departments in their assigned campus', async () => {
+    await scratch(CTX.campusAdminA, async (tx, ctx) => {
+      const list = await DepartmentService.list(tx, ctx);
+      expect(list.every((d) => d.campusId === CAMPUS_1)).toBe(true);
+      expect(list.some((d) => d.id === DEPT_1)).toBe(true);
+      expect(list.some((d) => d.id === DEPT_3)).toBe(false);
+    });
+  });
+
+  it('HOD receives only their assigned department', async () => {
+    await scratch(CTX.hodA, async (tx, ctx) => {
+      const list = await DepartmentService.list(tx, ctx);
+      expect(list.map((d) => d.id)).toEqual([DEPT_1]);
+    });
+  });
+
+  it('filters by kind and campusId correctly', async () => {
+    await scratch(CTX.staffA, async (tx, ctx) => {
+      const academicList = await DepartmentService.list(tx, ctx, { kind: 'ACADEMIC' });
+      expect(academicList.every((d) => d.kind === 'ACADEMIC')).toBe(true);
+
+      const campus1List = await DepartmentService.list(tx, ctx, { campusId: CAMPUS_1 });
+      expect(campus1List.every((d) => d.campusId === CAMPUS_1)).toBe(true);
+    });
+  });
+
+  it('non-managers never see inactive or soft-deleted departments even when explicitly filtering status=INACTIVE', async () => {
+    await scratch(CTX.staffA, async (tx, ctx) => {
+      const did = await DepartmentService.create(
+        tx,
+        ctx,
+        dept({ code: 'INACT_D_L', name: 'Inactive For List' }),
+      );
+      await DepartmentService.update(tx, ctx, did, { status: 'INACTIVE' });
+
+      // Manager can see inactive department when requesting status=INACTIVE
+      const managerList = await DepartmentService.list(tx, ctx, { status: 'INACTIVE' });
+      expect(managerList.some((d) => d.id === did)).toBe(true);
+
+      // Student receives empty array when filtering status=INACTIVE
+      const studentCtx = ctxOf(CTX.studentA);
+      const studentInactiveList = await DepartmentService.list(tx, studentCtx, {
+        status: 'INACTIVE',
+      });
+      expect(studentInactiveList).toEqual([]);
+
+      // Student default list excludes inactive department
+      const studentDefaultList = await DepartmentService.list(tx, studentCtx);
+      expect(studentDefaultList.some((d) => d.id === did)).toBe(false);
+    });
+  });
+
+  it('caller without permission receives 403 FORBIDDEN on list', async () => {
+    await scratch(CTX.noroleA, async (tx, ctx) => {
+      expect(await status(DepartmentService.list(tx, ctx))).toBe(403);
     });
   });
 });

@@ -61,6 +61,7 @@ describe('GET /auth/me profile', () => {
     expect(b.display_name).toBe('User A');
     expect(b.roles).toEqual(['STUDENT']);
     expect(b.capabilities).toEqual([
+      'org.structure.read',
       'session.read',
       'session.revoke',
       'student.profile.read',
@@ -87,7 +88,12 @@ describe('GET /auth/me profile', () => {
       capabilities: string[];
     }>();
     expect(b.roles).toEqual(['HOD']);
-    expect(b.capabilities).toEqual(['session.read', 'session.revoke', 'student.profile.read']);
+    expect(b.capabilities).toEqual([
+      'org.structure.read',
+      'session.read',
+      'session.revoke',
+      'student.profile.read',
+    ]);
   });
 
   it('a user with no effective assignment is refused (403), not given an empty profile', async () => {

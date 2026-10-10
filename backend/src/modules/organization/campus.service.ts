@@ -132,8 +132,109 @@ export class CampusService {
   }
 
   /**
+   * Lists campuses visible to the caller within their tenant.
+   * Scoped by effective grants (ORGANIZATION, CAMPUS, or parent campus of DEPARTMENT).
+   * Non-managers never see INACTIVE campuses, even when requested.
+   */
+  static async list(
+    tx: TenantTx,
+    ctx: TrustedContext,
+    filter?: { status?: 'ACTIVE' | 'INACTIVE' },
+  ): Promise<CampusRecord[]> {
+    if (!isTrustedContext(ctx)) {
+      throw new AppError(500, 'UNTRUSTED_CONTEXT', 'Database access requires a trusted context.');
+    }
+
+    // 1. Permission check: caller must hold either org.campus.manage OR org.structure.read
+    const isManager = await AuthorizationEngine.hasPermission(tx, ctx, 'org.campus.manage');
+    const hasRead = await AuthorizationEngine.hasPermission(tx, ctx, 'org.structure.read');
+    if (!isManager && !hasRead) {
+      throw new AppError(403, 'FORBIDDEN', 'Access denied.');
+    }
+
+    // 2. Non-managers never see inactive campuses
+    if (!isManager && filter?.status === 'INACTIVE') {
+      return [];
+    }
+
+    // 3. Effective scope calculation
+    const readGrants = await AuthorizationEngine.loadGrants(tx, ctx, 'org.structure.read');
+    const manageGrants = isManager
+      ? await AuthorizationEngine.loadGrants(tx, ctx, 'org.campus.manage')
+      : [];
+    const allGrants = [...readGrants, ...manageGrants];
+
+    const isOrgWide = allGrants.some((g) => g.scope_type === 'ORGANIZATION');
+
+    let allowedCampusIds: string[] = [];
+    if (!isOrgWide) {
+      const directCampusIds = allGrants
+        .filter((g) => g.scope_type === 'CAMPUS' && g.scope_id !== null)
+        .map((g) => g.scope_id as string);
+
+      const deptIds = allGrants
+        .filter((g) => g.scope_type === 'DEPARTMENT' && g.scope_id !== null)
+        .map((g) => g.scope_id as string);
+
+      let parentCampusIds: string[] = [];
+      if (deptIds.length > 0) {
+        const parentRes = await tx.query<{ campus_id: string }>(
+          `SELECT DISTINCT campus_id FROM app.departments
+            WHERE organization_id = $1 AND id = ANY($2::uuid[]) AND deleted_at IS NULL`,
+          [ctx.tenantId, deptIds],
+        );
+        parentCampusIds = parentRes.rows.map((r) => r.campus_id);
+      }
+
+      allowedCampusIds = [...new Set([...directCampusIds, ...parentCampusIds])];
+      if (allowedCampusIds.length === 0) {
+        return [];
+      }
+    }
+
+    const effectiveStatus = isManager ? (filter?.status ?? null) : 'ACTIVE';
+
+    const res = await tx.query<{
+      id: string;
+      organization_id: string;
+      name: string;
+      code: string;
+      timezone: string;
+      address: Record<string, unknown>;
+      status: 'ACTIVE' | 'INACTIVE';
+      version: number;
+      created_at: string;
+      updated_at: string;
+    }>(
+      `SELECT id, organization_id, name, code, timezone, address, status,
+              version, created_at, updated_at
+         FROM app.campuses
+        WHERE organization_id = $1
+          AND ($2::boolean OR id = ANY($3::uuid[]))
+          AND ($4::text IS NULL OR status = $4)
+        ORDER BY name, code`,
+      [ctx.tenantId, isOrgWide, allowedCampusIds, effectiveStatus],
+    );
+
+    return res.rows.map((r) => ({
+      id: r.id,
+      organizationId: r.organization_id,
+      name: r.name,
+      code: r.code,
+      timezone: r.timezone,
+      address: r.address ?? {},
+      status: r.status,
+      version: r.version,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+    }));
+  }
+
+  /**
    * Reads a campus by ID within the caller's tenant.
-   * Scoped to org.campus.manage (organization or campus scope).
+   * Scoped to org.campus.manage or org.structure.read.
+   * Parent-campus visibility is granted to department-scoped callers without exposing unrelated campuses.
+   * Non-managers never see INACTIVE campuses.
    */
   static async getById(tx: TenantTx, ctx: TrustedContext, campusId: string): Promise<CampusRecord> {
     if (!isTrustedContext(ctx)) {
@@ -143,15 +244,14 @@ export class CampusService {
       throw invalid('Invalid campus ID.');
     }
 
-    // Authorization: org.campus.manage permission check.
-    // 1. Permission held at all (throws 403 if user holds no grant for this permission).
-    await AuthorizationEngine.assert(tx, ctx, 'org.campus.manage');
-    // 2. Scoped permission check (throws 404 if actor's assignment is out of scope for this campus).
-    await AuthorizationEngine.assert(tx, ctx, 'org.campus.manage', {
-      organization_id: ctx.tenantId,
-      campus_id: campusId,
-    });
+    // 1. Permission held at all (throws 403 before any lookup if user holds no grant for either permission)
+    const isManager = await AuthorizationEngine.hasPermission(tx, ctx, 'org.campus.manage');
+    const hasRead = await AuthorizationEngine.hasPermission(tx, ctx, 'org.structure.read');
+    if (!isManager && !hasRead) {
+      throw new AppError(403, 'FORBIDDEN', 'Access denied.');
+    }
 
+    // 2. Fetch row
     const res = await tx.query<{
       id: string;
       organization_id: string;
@@ -172,6 +272,55 @@ export class CampusService {
     );
     const r = res.rows[0];
     if (!r) {
+      throw resourceNotFound();
+    }
+
+    // 3. Non-managers never see inactive campuses (identical 404)
+    if (!isManager && r.status === 'INACTIVE') {
+      throw resourceNotFound();
+    }
+
+    // 4. Scoped permission check
+    let allowed = false;
+    if (isManager) {
+      try {
+        await AuthorizationEngine.assert(tx, ctx, 'org.campus.manage', {
+          organization_id: ctx.tenantId,
+          campus_id: campusId,
+        });
+        allowed = true;
+      } catch {
+        // Not authorized under manage scope; check read scope below
+      }
+    }
+
+    if (!allowed && hasRead) {
+      const readGrants = await AuthorizationEngine.loadGrants(tx, ctx, 'org.structure.read');
+      for (const grant of readGrants) {
+        if (grant.scope_type === 'ORGANIZATION') {
+          allowed = true;
+          break;
+        }
+        if (grant.scope_type === 'CAMPUS' && grant.scope_id === campusId) {
+          allowed = true;
+          break;
+        }
+        if (grant.scope_type === 'DEPARTMENT' && grant.scope_id !== null) {
+          // Parent-campus visibility: department belongs to this campus
+          const parentCheck = await tx.query(
+            `SELECT 1 FROM app.departments
+              WHERE organization_id = $1 AND campus_id = $2 AND id = $3 AND deleted_at IS NULL`,
+            [ctx.tenantId, campusId, grant.scope_id],
+          );
+          if ((parentCheck.rowCount ?? 0) > 0) {
+            allowed = true;
+            break;
+          }
+        }
+      }
+    }
+
+    if (!allowed) {
       throw resourceNotFound();
     }
 

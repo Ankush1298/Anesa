@@ -1,4 +1,5 @@
 import { Type, type Static } from '@sinclair/typebox';
+import { SETTING_KEY_MAX_LENGTH, SETTING_KEY_PATTERN } from '../../shared/settings/index.js';
 
 /**
  * UUIDv7 pattern strictly adhering to RFC 9562 (version 7, variant 10).
@@ -180,6 +181,23 @@ export const GetCampusResponseSchema = Type.Object(
 );
 export type GetCampusResponse = Static<typeof GetCampusResponseSchema>;
 
+export const ListCampusesQuerySchema = Type.Object(
+  {
+    status: Type.Optional(CampusStatusSchema),
+  },
+  { additionalProperties: false },
+);
+export type ListCampusesQuery = Static<typeof ListCampusesQuerySchema>;
+
+export const ListCampusesResponseSchema = Type.Object(
+  {
+    success: Type.Literal(true),
+    data: Type.Array(CampusRecordSchema),
+  },
+  { additionalProperties: false },
+);
+export type ListCampusesResponse = Static<typeof ListCampusesResponseSchema>;
+
 export const UpdateCampusResponseSchema = SuccessResponseSchema;
 export type UpdateCampusResponse = Static<typeof UpdateCampusResponseSchema>;
 
@@ -242,8 +260,163 @@ export const GetDepartmentResponseSchema = Type.Object(
 );
 export type GetDepartmentResponse = Static<typeof GetDepartmentResponseSchema>;
 
+export const ListDepartmentsQuerySchema = Type.Object(
+  {
+    campusId: Type.Optional(UuidV7Schema),
+    kind: Type.Optional(DepartmentKindSchema),
+    status: Type.Optional(DepartmentStatusSchema),
+  },
+  { additionalProperties: false },
+);
+export type ListDepartmentsQuery = Static<typeof ListDepartmentsQuerySchema>;
+
+export const ListDepartmentsResponseSchema = Type.Object(
+  {
+    success: Type.Literal(true),
+    data: Type.Array(DepartmentRecordSchema),
+  },
+  { additionalProperties: false },
+);
+export type ListDepartmentsResponse = Static<typeof ListDepartmentsResponseSchema>;
+
 export const UpdateDepartmentResponseSchema = SuccessResponseSchema;
 export type UpdateDepartmentResponse = Static<typeof UpdateDepartmentResponseSchema>;
 
 export const DeleteDepartmentResponseSchema = SuccessResponseSchema;
 export type DeleteDepartmentResponse = Static<typeof DeleteDepartmentResponseSchema>;
+
+// ============================================================================
+// Designation Schemas
+// ============================================================================
+
+export const DesignationCategorySchema = Type.Union(
+  [Type.Literal('TEACHING'), Type.Literal('NON_TEACHING'), Type.Literal('ADMIN')],
+  { description: 'Designation category' },
+);
+export type DesignationCategory = Static<typeof DesignationCategorySchema>;
+
+export const DesignationStatusSchema = Type.Union(
+  [Type.Literal('ACTIVE'), Type.Literal('INACTIVE')],
+  { description: 'Designation status' },
+);
+export type DesignationStatus = Static<typeof DesignationStatusSchema>;
+
+export const CreateDesignationBodySchema = Type.Object(
+  {
+    code: CodeSchema,
+    name: NameSchema,
+    category: DesignationCategorySchema,
+  },
+  { additionalProperties: false },
+);
+export type CreateDesignationBody = Static<typeof CreateDesignationBodySchema>;
+
+export const DesignationRecordSchema = Type.Object(
+  {
+    id: UuidV7Schema,
+    organizationId: UuidV7Schema,
+    code: CodeSchema,
+    name: NameSchema,
+    category: DesignationCategorySchema,
+    status: DesignationStatusSchema,
+    version: Type.Integer({ minimum: 1 }),
+    createdAt: Type.String(),
+    updatedAt: Type.String(),
+  },
+  { additionalProperties: false },
+);
+export type DesignationRecordDto = Static<typeof DesignationRecordSchema>;
+
+export const CreateDesignationResponseSchema = Type.Object(
+  {
+    success: Type.Literal(true),
+    data: Type.Object(
+      {
+        id: UuidV7Schema,
+      },
+      { additionalProperties: false },
+    ),
+  },
+  { additionalProperties: false },
+);
+export type CreateDesignationResponse = Static<typeof CreateDesignationResponseSchema>;
+
+export const ListDesignationsQuerySchema = Type.Object(
+  {
+    status: Type.Optional(DesignationStatusSchema),
+    category: Type.Optional(DesignationCategorySchema),
+  },
+  { additionalProperties: false },
+);
+export type ListDesignationsQuery = Static<typeof ListDesignationsQuerySchema>;
+
+export const ListDesignationsResponseSchema = Type.Object(
+  {
+    success: Type.Literal(true),
+    data: Type.Array(DesignationRecordSchema),
+  },
+  { additionalProperties: false },
+);
+export type ListDesignationsResponse = Static<typeof ListDesignationsResponseSchema>;
+
+// ============================================================================
+// Organization settings (docs/architecture/v3/02 §4.2, 10 rows 18-19, 11 §5.4)
+// ============================================================================
+
+export const SettingKeySchema = Type.String({
+  minLength: 1,
+  maxLength: SETTING_KEY_MAX_LENGTH,
+  pattern: SETTING_KEY_PATTERN,
+  description: 'Registered setting key, e.g. identity.age_of_majority',
+});
+
+export const SettingParamsSchema = Type.Object(
+  { key: SettingKeySchema },
+  { additionalProperties: false },
+);
+export type SettingParams = Static<typeof SettingParamsSchema>;
+
+/**
+ * `value` is validated per key against the code registry (shared/settings), not here. `reason` is mandatory because
+ * org.settings.manage is a CRITICAL permission (doc 10 row 19). No tenant, user or version field is accepted.
+ */
+export const SetSettingBodySchema = Type.Object(
+  {
+    value: Type.Any(),
+    reason: Type.String({ minLength: 5, maxLength: 500 }),
+  },
+  { additionalProperties: false },
+);
+export type SetSettingBody = Static<typeof SetSettingBodySchema>;
+
+export const SettingRecordSchema = Type.Object(
+  {
+    key: SettingKeySchema,
+    value: Type.Any(),
+    /** True while no value is stored and the registry default applies. */
+    isDefault: Type.Boolean(),
+    /** null while the default applies. */
+    version: Type.Union([Type.Integer({ minimum: 1 }), Type.Null()]),
+    updatedAt: Type.Union([Type.String(), Type.Null()]),
+  },
+  { additionalProperties: false },
+);
+export type SettingRecordDto = Static<typeof SettingRecordSchema>;
+
+export const ListSettingsResponseSchema = Type.Object(
+  {
+    success: Type.Literal(true),
+    data: Type.Array(SettingRecordSchema),
+  },
+  { additionalProperties: false },
+);
+export type ListSettingsResponse = Static<typeof ListSettingsResponseSchema>;
+
+export const SetSettingResponseSchema = Type.Object(
+  {
+    success: Type.Literal(true),
+    data: SettingRecordSchema,
+  },
+  { additionalProperties: false },
+);
+export type SetSettingResponse = Static<typeof SetSettingResponseSchema>;

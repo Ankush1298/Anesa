@@ -17,6 +17,7 @@ const LOGINS = {
   facultyA: 'faculty.a@college-a.test',
   studentA: 'user.a@college-a.test',
   orgAdminB: 'staff.b@college-b.test',
+  noRoleA: 'norole.a@college-a.test',
 } as const;
 
 type UserKey = keyof typeof LOGINS;
@@ -141,6 +142,30 @@ function del(
       ...(origin !== undefined ? { origin } : {}),
       ...opts.headers,
     },
+  });
+}
+
+function put(
+  user: UserKey | null,
+  path: string,
+  payload?: InjectOptions['payload'],
+  opts: { csrf?: string; origin?: string; headers?: Record<string, string>; ifMatch?: string } = {},
+) {
+  const cookie = user ? { session_token: sessions[user].cookie } : {};
+  const csrf = opts.csrf !== undefined ? opts.csrf : user ? sessions[user].csrf : undefined;
+  const origin = opts.origin !== undefined ? opts.origin : APP_ORIGIN;
+  const headers: Record<string, string> = {
+    ...(csrf !== undefined ? { 'x-csrf-token': csrf } : {}),
+    ...(origin !== undefined ? { origin } : {}),
+    ...(opts.ifMatch !== undefined ? { 'if-match': opts.ifMatch } : {}),
+    ...opts.headers,
+  };
+  return app.inject({
+    method: 'PUT',
+    url: path,
+    ...(payload !== undefined ? { payload } : {}),
+    cookies: cookie,
+    headers,
   });
 }
 
@@ -347,6 +372,131 @@ describe('Organization HTTP API', () => {
     });
   });
 
+  describe('Designation Lifecycle & Contracts', () => {
+    it('creates and lists designations with valid payloads and filtering', async () => {
+      const code1 = `DSG_${Date.now().toString().slice(-8)}_1`;
+      const code2 = `DSG_${Date.now().toString().slice(-8)}_2`;
+
+      // 1. Create teaching designation
+      const res1 = await post('orgAdminA', '/api/v1/organization/designations', {
+        name: 'Assistant Professor',
+        code: code1,
+        category: 'TEACHING',
+      });
+      expect(res1.statusCode).toBe(201);
+      const d1 = res1.json<{
+        success: boolean;
+        data: {
+          id: string;
+        };
+      }>();
+      expect(d1.success).toBe(true);
+      expect(typeof d1.data.id).toBe('string');
+
+      // 2. Create second non-teaching designation and deactivate it directly in DB
+      const res2 = await post('orgAdminA', '/api/v1/organization/designations', {
+        name: 'Lab Assistant Retired',
+        code: code2,
+        category: 'NON_TEACHING',
+      });
+      expect(res2.statusCode).toBe(201);
+      await adminQuery(`UPDATE app.designations SET status = 'INACTIVE' WHERE code = $1`, [code2]);
+
+      // 3. Manager lists all designations (can see INACTIVE)
+      const listMgr = await get('orgAdminA', '/api/v1/organization/designations');
+      expect(listMgr.statusCode).toBe(200);
+      const mgrItems = listMgr.json<{ success: boolean; data: Array<{ code: string }> }>().data;
+      expect(mgrItems.some((i) => i.code === code1)).toBe(true);
+      expect(mgrItems.some((i) => i.code === code2)).toBe(true);
+
+      // 4. Non-manager (student) lists designations - shielded from INACTIVE
+      const listStudent = await get('studentA', '/api/v1/organization/designations');
+      expect(listStudent.statusCode).toBe(200);
+      const studentItems = listStudent.json<{ success: boolean; data: Array<{ code: string }> }>()
+        .data;
+      expect(studentItems.some((i) => i.code === code1)).toBe(true);
+      expect(studentItems.some((i) => i.code === code2)).toBe(false);
+
+      // 5. Non-manager explicit ?status=INACTIVE still shielded (returns empty for inactive)
+      const listStudentInactive = await get(
+        'studentA',
+        '/api/v1/organization/designations?status=INACTIVE',
+      );
+      expect(listStudentInactive.statusCode).toBe(200);
+      const inactiveItems = listStudentInactive.json<{
+        success: boolean;
+        data: Array<{ code: string }>;
+      }>().data;
+      expect(inactiveItems.some((i) => i.code === code2)).toBe(false);
+
+      // 6. Category filter works
+      const listTeaching = await get(
+        'orgAdminA',
+        '/api/v1/organization/designations?category=TEACHING',
+      );
+      expect(listTeaching.statusCode).toBe(200);
+      const teachingItems = listTeaching.json<{ success: boolean; data: Array<{ code: string }> }>()
+        .data;
+      expect(teachingItems.some((i) => i.code === code1)).toBe(true);
+      expect(teachingItems.some((i) => i.code === code2)).toBe(false);
+    });
+
+    it('rejects duplicate designation code within the same tenant with 409 CONFLICT', async () => {
+      const code = `DUP_${Date.now().toString().slice(-8)}`;
+      const first = await post('orgAdminA', '/api/v1/organization/designations', {
+        name: 'Professor First',
+        code,
+        category: 'TEACHING',
+      });
+      expect(first.statusCode).toBe(201);
+
+      const second = await post('orgAdminA', '/api/v1/organization/designations', {
+        name: 'Professor Second',
+        code,
+        category: 'TEACHING',
+      });
+      expect(second.statusCode).toBe(409);
+      expect(second.json<{ error: { code: string } }>().error.code).toBe('CONFLICT');
+    });
+
+    it('rejects unauthorized users attempting to create designations with 403 FORBIDDEN', async () => {
+      // Campus admin has CAMPUS scope, not ORGANIZATION scope
+      const resCampusAdmin = await post('campusAdminA', '/api/v1/organization/designations', {
+        name: 'Unauthorized Designation',
+        code: 'UNAUTH_01',
+        category: 'TEACHING',
+      });
+      expect(resCampusAdmin.statusCode).toBe(403);
+      expect(resCampusAdmin.json<{ error: { code: string } }>().error.code).toBe('FORBIDDEN');
+
+      // Student has org.structure.read only
+      const resStudent = await post('studentA', '/api/v1/organization/designations', {
+        name: 'Student Created Designation',
+        code: 'STUD_01',
+        category: 'ADMIN',
+      });
+      expect(resStudent.statusCode).toBe(403);
+      expect(resStudent.json<{ error: { code: string } }>().error.code).toBe('FORBIDDEN');
+    });
+
+    it('rejects invalid category and status with 400 BAD_REQUEST', async () => {
+      const res1 = await post('orgAdminA', '/api/v1/organization/designations', {
+        name: 'Invalid Category',
+        code: 'INV_CAT',
+        category: 'UNKNOWN',
+      });
+      expect(res1.statusCode).toBe(400);
+
+      const res2 = await post('orgAdminA', '/api/v1/organization/designations', {
+        name: 'Invalid Status',
+        code: 'INV_STAT',
+        category: 'TEACHING',
+        status: 'DELETED',
+      });
+      expect(res2.statusCode).toBe(400);
+    });
+  });
+
   describe('Authentication & Authorization Isolation', () => {
     it('returns 401 UNAUTHORIZED on unauthenticated requests', async () => {
       const campusRes = await get(null, `/api/v1/organization/campuses/${CAMPUS_1}`);
@@ -356,25 +506,64 @@ describe('Organization HTTP API', () => {
       const deptRes = await get(null, `/api/v1/organization/departments/${DEPT_1}`);
       expect(deptRes.statusCode).toBe(401);
       expect(deptRes.json<{ error: { code: string } }>().error.code).toBe('UNAUTHORIZED');
+
+      const dsgRes = await get(null, `/api/v1/organization/designations`);
+      expect(dsgRes.statusCode).toBe(401);
+      expect(dsgRes.json<{ error: { code: string } }>().error.code).toBe('UNAUTHORIZED');
     });
 
-    it('returns 403 FORBIDDEN when user has insufficient permissions (STUDENT / FACULTY)', async () => {
-      // STUDENT has no org.campus.manage or org.department.manage
-      const r1 = await get('studentA', `/api/v1/organization/campuses/${CAMPUS_1}`);
+    it('returns 403 FORBIDDEN when user has insufficient permissions', async () => {
+      // User with no roles/permissions cannot read campuses or departments or designations
+      const r1 = await get('noRoleA', `/api/v1/organization/campuses/${CAMPUS_1}`);
       expect(r1.statusCode).toBe(403);
       expect(r1.json<{ error: { code: string } }>().error.code).toBe('FORBIDDEN');
 
-      const r2 = await post('studentA', '/api/v1/organization/campuses', {
+      const r2 = await get('noRoleA', `/api/v1/organization/campuses`);
+      expect(r2.statusCode).toBe(403);
+      expect(r2.json<{ error: { code: string } }>().error.code).toBe('FORBIDDEN');
+
+      const r3 = await get('noRoleA', `/api/v1/organization/departments/${DEPT_1}`);
+      expect(r3.statusCode).toBe(403);
+      expect(r3.json<{ error: { code: string } }>().error.code).toBe('FORBIDDEN');
+
+      const r4 = await get('noRoleA', `/api/v1/organization/departments`);
+      expect(r4.statusCode).toBe(403);
+      expect(r4.json<{ error: { code: string } }>().error.code).toBe('FORBIDDEN');
+
+      const rDsg = await get('noRoleA', `/api/v1/organization/designations`);
+      expect(rDsg.statusCode).toBe(403);
+      expect(rDsg.json<{ error: { code: string } }>().error.code).toBe('FORBIDDEN');
+
+      // STUDENT has org.structure.read so can read, but has no org.campus.manage so cannot create
+      const r5 = await post('studentA', '/api/v1/organization/campuses', {
         name: 'Rogue Campus',
         code: 'ROGUE',
         timezone: 'Asia/Kolkata',
       });
-      expect(r2.statusCode).toBe(403);
-      expect(r2.json<{ error: { code: string } }>().error.code).toBe('FORBIDDEN');
+      expect(r5.statusCode).toBe(403);
+      expect(r5.json<{ error: { code: string } }>().error.code).toBe('FORBIDDEN');
+    });
 
+    it('allows read access to campuses and departments for callers with org.structure.read', async () => {
+      // STUDENT has org.structure.read
+      const r1 = await get('studentA', `/api/v1/organization/campuses/${CAMPUS_1}`);
+      expect(r1.statusCode).toBe(200);
+
+      const r2 = await get('studentA', `/api/v1/organization/campuses`);
+      expect(r2.statusCode).toBe(200);
+      const campuses = r2.json<{ success: boolean; data: unknown[] }>();
+      expect(campuses.success).toBe(true);
+      expect(campuses.data.length).toBeGreaterThan(0);
+
+      // FACULTY has org.structure.read
       const r3 = await get('facultyA', `/api/v1/organization/departments/${DEPT_1}`);
-      expect(r3.statusCode).toBe(403);
-      expect(r3.json<{ error: { code: string } }>().error.code).toBe('FORBIDDEN');
+      expect(r3.statusCode).toBe(200);
+
+      const r4 = await get('facultyA', `/api/v1/organization/departments`);
+      expect(r4.statusCode).toBe(200);
+      const depts = r4.json<{ success: boolean; data: unknown[] }>();
+      expect(depts.success).toBe(true);
+      expect(depts.data.length).toBeGreaterThan(0);
     });
 
     it('returns 404 RESOURCE_NOT_FOUND when accessing resources across tenants (Tenant Isolation)', async () => {
@@ -624,6 +813,453 @@ describe('Organization HTTP API', () => {
         )
       )[0]!.c;
       expect(countAfter).toBe(countBefore);
+    });
+
+    it('read endpoints do NOT write audit events', async () => {
+      const readsBefore = await adminQuery<{ action: string }>(
+        `SELECT action FROM app.audit_events WHERE action LIKE '%read%' OR action LIKE '%list%'`,
+      );
+      expect(readsBefore).toEqual([]);
+
+      await get('orgAdminA', `/api/v1/organization/campuses`);
+      await get('orgAdminA', `/api/v1/organization/campuses/${CAMPUS_1}`);
+      await get('orgAdminA', `/api/v1/organization/departments`);
+      await get('orgAdminA', `/api/v1/organization/departments/${DEPT_1}`);
+      await get('studentA', `/api/v1/organization/campuses`);
+      await get('studentA', `/api/v1/organization/departments`);
+      await get('studentA', `/api/v1/organization/designations`);
+
+      const readsAfter = await adminQuery<{ action: string }>(
+        `SELECT action FROM app.audit_events WHERE action LIKE '%read%' OR action LIKE '%list%'`,
+      );
+      expect(readsAfter).toEqual([]);
+    });
+  });
+
+  describe('Organization Settings (GET /settings, PUT /settings/:key)', () => {
+    const BASE = '/api/v1/organization/settings';
+    const AGE = 'identity.age_of_majority';
+    const NOTIFY = 'guardian.notification_policy';
+    const REASON = 'Aligned with the institution policy';
+    type Rec = {
+      key: string;
+      value: unknown;
+      isDefault: boolean;
+      version: number | null;
+      updatedAt: string | null;
+    };
+    type Err = { error: { code: string; message: string; requestId?: string } };
+
+    const auditFor = (org: string, key: string) =>
+      adminQuery<{
+        risk_tier: number;
+        reason_text: string;
+        ip: string;
+        request_id: string;
+        actor_user_id: string;
+        changes: { value: { old: unknown; new: unknown } };
+        metadata: { settingKey: string; created: boolean };
+      }>(
+        `SELECT risk_tier, reason_text, ip, request_id, actor_user_id, changes, metadata
+           FROM app.audit_events
+          WHERE organization_id = $1 AND action = 'organization.setting.update' AND metadata->>'settingKey' = $2
+          ORDER BY occurred_at`,
+        [org, key],
+      );
+    const stored = (org: string, key: string) =>
+      adminQuery<{ value: unknown; version: number }>(
+        'SELECT value, version FROM app.organization_settings WHERE organization_id = $1 AND key = $2',
+        [org, key],
+      );
+    const wipe = () =>
+      adminQuery('DELETE FROM app.organization_settings WHERE organization_id = ANY($1::uuid[])', [
+        [ORG_A, '01939a00-0000-7000-8000-000000000b01'],
+      ]);
+    beforeAll(wipe);
+    afterAll(wipe);
+
+    it('requires authentication for GET and PUT', async () => {
+      expect((await get(null, BASE)).statusCode).toBe(401);
+      expect(
+        (await put(null, `${BASE}/${AGE}`, { value: 21, reason: REASON }, { ifMatch: '"0"' }))
+          .statusCode,
+      ).toBe(401);
+    });
+
+    it('lists the registry defaults for a tenant that has stored nothing, in the standard envelope', async () => {
+      const res = await get('orgAdminA', BASE);
+      expect(res.statusCode).toBe(200);
+      expect(res.headers['etag']).toMatch(/^W\/"[a-f0-9]+"/);
+      expect(res.json<{ success: boolean; data: Rec[] }>()).toEqual({
+        success: true,
+        data: [{ key: AGE, value: 18, isDefault: true, version: null, updatedAt: null }],
+      });
+    });
+
+    it('PUT creates, then updates, then treats an identical value as a no-op', async () => {
+      const first = await put(
+        'orgAdminA',
+        `${BASE}/${AGE}`,
+        { value: 21, reason: REASON },
+        { ifMatch: '"0"' },
+      );
+      expect(first.statusCode).toBe(200);
+      expect(first.headers['etag']).toBe('"1"');
+      const a = first.json<{ success: boolean; data: Rec }>();
+      expect(a.data).toMatchObject({ key: AGE, value: 21, isDefault: false, version: 1 });
+
+      const second = await put(
+        'orgAdminA',
+        `${BASE}/${AGE}`,
+        { value: 16, reason: REASON },
+        { ifMatch: '"1"' },
+      );
+      expect(second.statusCode).toBe(200);
+      expect(second.headers['etag']).toBe('"2"');
+      expect(second.json<{ data: Rec }>().data).toMatchObject({ value: 16, version: 2 });
+
+      const same = await put(
+        'orgAdminA',
+        `${BASE}/${AGE}`,
+        { value: 16, reason: REASON },
+        { ifMatch: '"2"' },
+      );
+      expect(same.statusCode).toBe(200);
+      expect(same.headers['etag']).toBe('"2"');
+      expect(same.json<{ data: Rec }>().data).toMatchObject({ value: 16, version: 2 });
+      expect(await stored(ORG_A, AGE)).toEqual([{ value: 16, version: 2 }]);
+
+      const list = await get('orgAdminA', BASE);
+      expect(list.json<{ data: Rec[] }>().data).toEqual([
+        expect.objectContaining({ key: AGE, value: 16, isDefault: false, version: 2 }),
+      ]);
+    });
+
+    it('audits each change once, with reason, tier 2, request facts and an old/new diff; a no-op and reads add nothing', async () => {
+      const before = (await auditFor(ORG_A, NOTIFY)).length;
+      const created = await put(
+        'orgAdminA',
+        `${BASE}/${NOTIFY}`,
+        {
+          value: 'NEVER',
+          reason: REASON,
+        },
+        { ifMatch: '"0"' },
+      );
+      expect(created.statusCode).toBe(200);
+      expect(created.headers['etag']).toBe('"1"');
+      const changed = await put(
+        'orgAdminA',
+        `${BASE}/${NOTIFY}`,
+        {
+          value: 'MINORS_ONLY',
+          reason: `${REASON} (second)`,
+        },
+        { ifMatch: '"1"' },
+      );
+      expect(changed.statusCode).toBe(200);
+      expect(changed.headers['etag']).toBe('"2"');
+      await put(
+        'orgAdminA',
+        `${BASE}/${NOTIFY}`,
+        { value: 'MINORS_ONLY', reason: REASON },
+        { ifMatch: '"2"' },
+      ); // no-op
+      await get('orgAdminA', BASE);
+
+      const rows = (await auditFor(ORG_A, NOTIFY)).slice(before);
+      expect(rows).toHaveLength(2);
+      expect(rows[0]).toMatchObject({
+        risk_tier: 2,
+        reason_text: REASON,
+        ip: '127.0.0.1',
+        changes: { value: { old: null, new: 'NEVER' } },
+        metadata: { settingKey: NOTIFY, created: true },
+      });
+      expect(rows[1]).toMatchObject({
+        reason_text: `${REASON} (second)`,
+        changes: { value: { old: 'NEVER', new: 'MINORS_ONLY' } },
+        metadata: { settingKey: NOTIFY, created: false },
+      });
+      expect(typeof rows[0]?.request_id).toBe('string');
+      expect(rows[0]?.request_id).not.toBe(rows[1]?.request_id);
+    });
+
+    it.each(['campusAdminA', 'facultyA', 'studentA', 'noRoleA'] as const)(
+      '%s cannot write: 403 FORBIDDEN, nothing stored, nothing audited',
+      async (user) => {
+        const auditBefore = (await auditFor(ORG_A, 'identity.dob_required')).length;
+        const res = await put(
+          user,
+          `${BASE}/identity.dob_required`,
+          {
+            value: true,
+            reason: REASON,
+          },
+          { ifMatch: '"0"' },
+        );
+        expect(res.statusCode).toBe(403);
+        expect(res.json<Err>().error.code).toBe('FORBIDDEN');
+        expect(await stored(ORG_A, 'identity.dob_required')).toEqual([]);
+        expect((await auditFor(ORG_A, 'identity.dob_required')).length).toBe(auditBefore);
+      },
+    );
+
+    it.each(['facultyA', 'studentA', 'noRoleA'] as const)(
+      '%s cannot read: 403 at the route gate',
+      async (user) => {
+        const res = await get(user, BASE);
+        expect(res.statusCode).toBe(403);
+        expect(res.json<Err>().error.code).toBe('FORBIDDEN');
+      },
+    );
+
+    it('CAMPUS_ADMIN holds org.settings.read at CAMPUS scope: may read tenant-wide settings (200), but cannot write (403)', async () => {
+      const res = await get('campusAdminA', BASE);
+      expect(res.statusCode).toBe(200);
+      expect(res.headers['etag']).toMatch(/^W\/"[a-f0-9]+"/);
+      expect(res.json<{ success: boolean; data: Rec[] }>().success).toBe(true);
+    });
+
+    it('PUT is state-changing: it requires the CSRF token and an allowed Origin', async () => {
+      const path = `${BASE}/identity.dob_required`;
+      const body = { value: true, reason: REASON };
+      for (const opts of [
+        { csrf: 'not-the-token' },
+        { csrf: '' },
+        { origin: 'https://evil.example' },
+      ]) {
+        const res = await put('orgAdminA', path, body, { ...opts, ifMatch: '"0"' });
+        expect(res.statusCode, JSON.stringify(opts)).toBe(403);
+        expect(res.json<Err>().error.code).toBe('CSRF_REJECTED');
+      }
+      const noToken = await app.inject({
+        method: 'PUT',
+        url: path,
+        payload: body,
+        cookies: { session_token: sessions.orgAdminA.cookie },
+        headers: { origin: APP_ORIGIN, 'if-match': '"0"' },
+      });
+      expect(noToken.statusCode).toBe(403);
+      expect(await stored(ORG_A, 'identity.dob_required')).toEqual([]);
+    });
+
+    it('rejects bad input with 400 and stores nothing: schema-level (BAD_REQUEST) and service-level (VALIDATION_ERROR)', async () => {
+      const path = `${BASE}/identity.dob_required`;
+      // rejected by the route schema, before the handler
+      const schemaLevel: unknown[] = [
+        {},
+        { value: true },
+        { reason: REASON },
+        { value: true, reason: 'abc' },
+        { value: true, reason: REASON, organizationId: ORG_A },
+        { value: true, reason: REASON, organization_id: ORG_A },
+        { value: true, reason: REASON, updatedBy: ORG_A },
+        { value: true, reason: REASON, version: 7 },
+        { value: true, reason: REASON, key: 'identity.age_of_majority' },
+      ];
+      for (const payload of schemaLevel) {
+        const res = await put('orgAdminA', path, payload as InjectOptions['payload'], {
+          ifMatch: '"0"',
+        });
+        expect(res.statusCode, JSON.stringify(payload)).toBe(400);
+        expect(res.json<Err>().error.code, JSON.stringify(payload)).toBe('BAD_REQUEST');
+      }
+      // pass the schema, refused by the service: a blank reason and values outside the key's schema
+      const serviceLevel: unknown[] = [
+        { value: true, reason: '     ' },
+        { value: 'yes', reason: REASON },
+        { value: null, reason: REASON },
+        { value: 1, reason: REASON },
+      ];
+      for (const payload of serviceLevel) {
+        const res = await put('orgAdminA', path, payload as InjectOptions['payload'], {
+          ifMatch: '"0"',
+        });
+        expect(res.statusCode, JSON.stringify(payload)).toBe(400);
+        expect(res.json<Err>().error.code, JSON.stringify(payload)).toBe('VALIDATION_ERROR');
+      }
+      expect(await stored(ORG_A, 'identity.dob_required')).toEqual([]);
+    });
+
+    it('an unregistered key is 404 for an administrator; a malformed or over-long key never reaches the handler', async () => {
+      const unknown = await put(
+        'orgAdminA',
+        `${BASE}/no.such_key`,
+        { value: 1, reason: REASON },
+        { ifMatch: '"0"' },
+      );
+      expect(unknown.statusCode).toBe(404);
+      expect(unknown.json<Err>().error.code).toBe('RESOURCE_NOT_FOUND');
+      for (const key of ['Bad-Key', 'identity.', '.identity']) {
+        const res = await put(
+          'orgAdminA',
+          `${BASE}/${encodeURIComponent(key)}`,
+          {
+            value: 1,
+            reason: REASON,
+          },
+          { ifMatch: '"0"' },
+        );
+        expect(res.statusCode, key).toBe(400);
+        expect(res.json<Err>().error.code, key).toBe('BAD_REQUEST');
+      }
+      // 101 characters: the router's parameter limit (100) refuses it first, as a client error, never a 2xx/5xx
+      const tooLong = await put(
+        'orgAdminA',
+        `${BASE}/${'k'.repeat(101)}`,
+        {
+          value: 1,
+          reason: REASON,
+        },
+        { ifMatch: '"0"' },
+      );
+      expect([400, 414]).toContain(tooLong.statusCode);
+    });
+
+    it('tenants are independent: tenant B reads and writes only its own value', async () => {
+      const b = await put(
+        'orgAdminB',
+        `${BASE}/${AGE}`,
+        { value: 19, reason: REASON },
+        { ifMatch: '"0"' },
+      );
+      expect(b.statusCode).toBe(200);
+      expect(b.headers['etag']).toBe('"1"');
+      expect(b.json<{ data: Rec }>().data).toMatchObject({ value: 19, version: 1 });
+      expect(await stored(ORG_A, AGE)).toEqual([{ value: 16, version: 2 }]); // untouched
+      const listB = await get('orgAdminB', BASE);
+      expect(listB.json<{ data: Rec[] }>().data).toEqual([
+        expect.objectContaining({ key: AGE, value: 19, version: 1 }),
+      ]);
+      const listA = await get('orgAdminA', BASE);
+      expect(listA.json<{ data: Rec[] }>().data.find((r) => r.key === AGE)?.value).toBe(16);
+    });
+
+    describe('Optimistic Concurrency & ETag Verification', () => {
+      it('GET /settings returns a collection weak ETag header', async () => {
+        const res = await get('orgAdminA', BASE);
+        expect(res.statusCode).toBe(200);
+        expect(res.headers['etag']).toMatch(/^W\/"[a-f0-9]+"/);
+      });
+
+      it('PUT /settings/:key without If-Match returns 428 PRECONDITION_REQUIRED', async () => {
+        const res = await put('orgAdminA', `${BASE}/${AGE}`, { value: 21, reason: REASON });
+        expect(res.statusCode).toBe(428);
+        expect(res.json<Err>().error.code).toBe('PRECONDITION_REQUIRED');
+      });
+
+      it('PUT /settings/:key with malformed If-Match returns 400 BAD_REQUEST', async () => {
+        for (const bad of ['invalid', 'abc', '-1', '1.5', '""']) {
+          const res = await put(
+            'orgAdminA',
+            `${BASE}/${AGE}`,
+            { value: 21, reason: REASON },
+            { ifMatch: bad },
+          );
+          expect(res.statusCode).toBe(400);
+          expect(res.json<Err>().error.code).toBe('BAD_REQUEST');
+        }
+      });
+
+      it('PUT /settings/:key with weak If-Match returns 400 BAD_REQUEST and does not mutate', async () => {
+        const current = await stored(ORG_A, AGE);
+        const currentVer = current[0]?.version ?? 2;
+        const res = await put(
+          'orgAdminA',
+          `${BASE}/${AGE}`,
+          { value: 25, reason: REASON },
+          { ifMatch: `W/"${currentVer}"` },
+        );
+        expect(res.statusCode).toBe(400);
+        expect(res.json<Err>().error.code).toBe('BAD_REQUEST');
+        expect(await stored(ORG_A, AGE)).toEqual(current); // unmutated
+      });
+
+      it('PUT /settings/:key with stale If-Match returns 409 CONFLICT', async () => {
+        // AGE in ORG_A is stored at version 2
+        const current = await stored(ORG_A, AGE);
+        const currentVer = current[0]?.version ?? 2;
+        const staleVer = currentVer - 1;
+
+        const stale = await put(
+          'orgAdminA',
+          `${BASE}/${AGE}`,
+          { value: 25, reason: REASON },
+          { ifMatch: `"${staleVer}"` },
+        );
+        expect(stale.statusCode).toBe(409);
+        expect(stale.json<Err>().error.code).toBe('CONFLICT');
+        expect(await stored(ORG_A, AGE)).toEqual(current); // unmutated
+      });
+
+      it('PUT /settings/:key with If-Match: * succeeds on existing setting and updates version', async () => {
+        const current = await stored(ORG_A, AGE);
+        const currentVer = current[0]?.version ?? 2;
+        const nextVer = currentVer + 1;
+
+        const res = await put(
+          'orgAdminA',
+          `${BASE}/${AGE}`,
+          { value: 25, reason: REASON },
+          { ifMatch: '*' },
+        );
+        expect(res.statusCode).toBe(200);
+        expect(res.headers.etag).toBe(`"${nextVer}"`);
+        expect(res.json<{ data: Rec }>().data).toMatchObject({
+          key: AGE,
+          value: 25,
+          version: nextVer,
+        });
+        expect(await stored(ORG_A, AGE)).toEqual([{ value: 25, version: nextVer }]);
+      });
+
+      it('PUT /settings/:key with If-Match: * returns 409 CONFLICT on unpersisted default and creates no row', async () => {
+        // Delete stored row so AGE exists only as an unpersisted registry default in ORG_A
+        await adminQuery(
+          'DELETE FROM app.organization_settings WHERE organization_id = $1 AND key = $2',
+          [ORG_A, AGE],
+        );
+        expect(await stored(ORG_A, AGE)).toEqual([]);
+
+        // Confirm it is visible in GET as an unpersisted default
+        const list = await get('orgAdminA', BASE);
+        const item = list.json<{ data: Rec[] }>().data.find((r) => r.key === AGE);
+        expect(item).toMatchObject({ key: AGE, isDefault: true, version: null });
+
+        const res = await put(
+          'orgAdminA',
+          `${BASE}/${AGE}`,
+          { value: 21, reason: REASON },
+          { ifMatch: '*' },
+        );
+        expect(res.statusCode).toBe(409);
+        expect(res.json<Err>().error.code).toBe('CONFLICT');
+        expect(await stored(ORG_A, AGE)).toEqual([]); // no row created
+      });
+
+      it('parallel PUT requests with the same initial If-Match: exactly one succeeds (200), one conflicts (409)', async () => {
+        await adminQuery(
+          'DELETE FROM app.organization_settings WHERE organization_id = $1 AND key = $2',
+          [ORG_A, 'guardian.academic_visibility'],
+        );
+        const [res1, res2] = await Promise.all([
+          put(
+            'orgAdminA',
+            `${BASE}/guardian.academic_visibility`,
+            { value: 'MINORS_ONLY', reason: `${REASON} branch 1` },
+            { ifMatch: '"0"' },
+          ),
+          put(
+            'orgAdminA',
+            `${BASE}/guardian.academic_visibility`,
+            { value: 'ALWAYS_WHEN_LINKED', reason: `${REASON} branch 2` },
+            { ifMatch: '"0"' },
+          ),
+        ]);
+        const statuses = [res1.statusCode, res2.statusCode].sort();
+        expect(statuses).toEqual([200, 409]);
+      });
     });
   });
 

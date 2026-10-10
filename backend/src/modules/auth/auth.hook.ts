@@ -2,7 +2,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import fp from 'fastify-plugin';
 import type { AuthService } from './auth.service.js';
 import type { TrustedContext } from '../../shared/tenancy/trusted-context.js';
-import { AppError } from '../../shared/errors/http-errors.js';
+import { AppError, resourceNotFound } from '../../shared/errors/http-errors.js';
 import { AuthorizationEngine, type ResourceScope } from '../../shared/authorization/engine.js';
 import type { Database } from '../../shared/database/index.js';
 import { assertCsrfToken, assertOrigin, isUnsafeMethod } from './csrf.js';
@@ -13,7 +13,7 @@ declare module 'fastify' {
     tenantContext?: TrustedContext;
   }
   interface FastifyContextConfig {
-    permission?: string;
+    permission?: string | readonly string[];
     extractScope?: (req: FastifyRequest) => ResourceScope | undefined;
   }
 }
@@ -93,10 +93,33 @@ const authPlugin: FastifyPluginAsync<AuthPluginOptions> = async (app, opts) => {
     }
 
     const scope = config.extractScope ? config.extractScope(request) : undefined;
+    const perms = Array.isArray(config.permission)
+      ? (config.permission as readonly string[])
+      : [config.permission as string];
 
-    // We execute the check using the configured permission and scope extractor
+    // We execute the check using the configured permission(s) and scope extractor
     await opts.db.withTenant(ctx, async (tx) => {
-      await AuthorizationEngine.assert(tx, ctx, config.permission as string, scope);
+      let authorized = false;
+      for (const perm of perms) {
+        if (!scope) {
+          if (await AuthorizationEngine.hasPermission(tx, ctx, perm)) {
+            authorized = true;
+            break;
+          }
+        } else {
+          try {
+            await AuthorizationEngine.assert(tx, ctx, perm, scope);
+            authorized = true;
+            break;
+          } catch {
+            // try next permission
+          }
+        }
+      }
+      if (!authorized) {
+        if (!scope) throw new AppError(403, 'FORBIDDEN', 'Access denied.');
+        throw resourceNotFound();
+      }
     });
   });
 };

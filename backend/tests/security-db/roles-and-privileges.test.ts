@@ -12,6 +12,8 @@ const APP_TABLES = [
   'audit_events',
   'campuses',
   'departments',
+  'designations',
+  'organization_settings',
   'organizations',
   'role_assignments',
   'role_permissions',
@@ -177,7 +179,8 @@ describe('ownership trap: FORCE ROW LEVEL SECURITY (Invariant E)', () => {
          JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'app' AND c.relkind IN ('r', 'p') AND NOT c.relispartition ORDER BY 1`,
     );
     // partitions are covered one by one in security-db/audit-events.test.ts
-    expect(rows.map((r) => r.relname)).toEqual([...APP_TABLES].sort());
+    // sorted here, not by the server: ORDER BY depends on the collation ('organization_settings' vs 'organizations')
+    expect(rows.map((r) => r.relname).sort()).toEqual([...APP_TABLES].sort());
     for (const r of rows) {
       expect(r.relrowsecurity, `${r.relname} RLS`).toBe(true);
       expect(r.relforcerowsecurity, `${r.relname} FORCE`).toBe(true);

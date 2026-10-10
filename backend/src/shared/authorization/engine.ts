@@ -33,7 +33,7 @@ export function clearAssignedResolvers(): void {
   assignedResolvers.clear();
 }
 
-interface Grant {
+export interface Grant {
   scope_mode: ScopeMode;
   scope_type: ScopeType;
   scope_id: string | null;
@@ -64,7 +64,7 @@ function requireKnownPermission(permission: string): void {
  */
 export class AuthorizationEngine {
   /** Effective (ACTIVE, started, not ended) grants of the actor for one permission, this tenant only. */
-  private static async loadGrants(
+  public static async loadGrants(
     tx: TenantTx,
     ctx: TrustedContext,
     permission: string,

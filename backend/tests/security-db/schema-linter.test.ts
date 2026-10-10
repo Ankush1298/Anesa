@@ -173,6 +173,8 @@ describe('schema linter (S-2)', () => {
       'audit_events',
       'campuses',
       'departments',
+      'designations',
+      'organization_settings',
       'organizations',
       'role_assignments',
       'role_permissions',

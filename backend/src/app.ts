@@ -18,6 +18,7 @@ declare module 'fastify' {
   interface FastifyContextConfig {
     /** Marks a route as intentionally unauthenticated. Every other route will require a permission (Slice 3). */
     public?: boolean;
+    permission?: string | readonly string[];
   }
 }
 
@@ -47,12 +48,25 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   });
 
   // Route coverage (06 §2 step 5, 10 §4.1): every route is either on the explicit public allowlist
-  // or names exactly one permission from the central catalog. Violations fail at boot, not at runtime.
+  // or names catalogued permission(s) from the central catalog. Violations fail at boot, not at runtime.
   app.addHook('onRoute', (route) => {
-    const cfg = route.config as { public?: boolean; permission?: string } | undefined;
+    const cfg = route.config as
+      { public?: boolean; permission?: string | readonly string[] } | undefined;
     if (cfg?.public === true) return;
-    if (!cfg?.permission || !PERMISSION_CODES.has(cfg.permission)) {
+    if (!cfg?.permission) {
       throw new Error(`Route ${route.method.toString()} ${route.url} has no catalogued permission`);
+    }
+    const permVal = cfg.permission;
+    const perms: readonly string[] = typeof permVal === 'string' ? [permVal] : permVal;
+    if (perms.length === 0) {
+      throw new Error(`Route ${route.method.toString()} ${route.url} has no catalogued permission`);
+    }
+    for (const p of perms) {
+      if (!PERMISSION_CODES.has(p)) {
+        throw new Error(
+          `Route ${route.method.toString()} ${route.url} has no catalogued permission: ${p}`,
+        );
+      }
     }
   });
 

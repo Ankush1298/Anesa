@@ -25,6 +25,12 @@ export interface UpdateDepartmentInput {
   status?: 'ACTIVE' | 'INACTIVE';
 }
 
+export interface DepartmentListFilter {
+  campusId?: string;
+  kind?: DepartmentKind;
+  status?: 'ACTIVE' | 'INACTIVE';
+}
+
 export interface DepartmentRecord {
   id: string;
   organizationId: string;
@@ -426,9 +432,117 @@ export class DepartmentService {
   }
 
   /**
+   * Lists departments visible to the caller within their tenant.
+   * Scoped by effective grants (ORGANIZATION, CAMPUS, or DEPARTMENT).
+   * Non-managers never see soft-deleted or INACTIVE departments.
+   */
+  static async list(
+    tx: TenantTx,
+    ctx: TrustedContext,
+    filter?: DepartmentListFilter,
+  ): Promise<DepartmentRecord[]> {
+    if (!isTrustedContext(ctx)) {
+      throw new AppError(500, 'UNTRUSTED_CONTEXT', 'Database access requires a trusted context.');
+    }
+    if (filter?.campusId && !isUuidV7(filter.campusId)) {
+      throw invalid('Invalid campus ID.');
+    }
+
+    // 1. Permission check: caller must hold either org.department.manage OR org.structure.read
+    const isManager = await AuthorizationEngine.hasPermission(tx, ctx, 'org.department.manage');
+    const hasRead = await AuthorizationEngine.hasPermission(tx, ctx, 'org.structure.read');
+    if (!isManager && !hasRead) {
+      throw new AppError(403, 'FORBIDDEN', 'Access denied.');
+    }
+
+    // 2. Non-managers never see inactive departments
+    if (!isManager && filter?.status === 'INACTIVE') {
+      return [];
+    }
+
+    // 3. Effective scope calculation
+    const readGrants = await AuthorizationEngine.loadGrants(tx, ctx, 'org.structure.read');
+    const manageGrants = isManager
+      ? await AuthorizationEngine.loadGrants(tx, ctx, 'org.department.manage')
+      : [];
+    const allGrants = [...readGrants, ...manageGrants];
+
+    const isOrgWide = allGrants.some((g) => g.scope_type === 'ORGANIZATION');
+
+    let allowedCampusIds: string[] = [];
+    let allowedDeptIds: string[] = [];
+    if (!isOrgWide) {
+      allowedCampusIds = allGrants
+        .filter((g) => g.scope_type === 'CAMPUS' && g.scope_id !== null)
+        .map((g) => g.scope_id as string);
+
+      allowedDeptIds = allGrants
+        .filter((g) => g.scope_type === 'DEPARTMENT' && g.scope_id !== null)
+        .map((g) => g.scope_id as string);
+
+      if (allowedCampusIds.length === 0 && allowedDeptIds.length === 0) {
+        return [];
+      }
+    }
+
+    const effectiveStatus = isManager ? (filter?.status ?? null) : 'ACTIVE';
+
+    const res = await tx.query<{
+      id: string;
+      organization_id: string;
+      campus_id: string;
+      parent_department_id: string | null;
+      name: string;
+      code: string;
+      kind: DepartmentKind;
+      status: 'ACTIVE' | 'INACTIVE';
+      deleted_at: string | null;
+      version: number;
+      created_at: string;
+      updated_at: string;
+    }>(
+      `SELECT id, organization_id, campus_id, parent_department_id, name, code, kind, status,
+              deleted_at, version, created_at, updated_at
+         FROM app.departments
+        WHERE organization_id = $1
+          AND deleted_at IS NULL
+          AND ($2::boolean OR campus_id = ANY($3::uuid[]) OR id = ANY($4::uuid[]))
+          AND ($5::uuid IS NULL OR campus_id = $5)
+          AND ($6::text IS NULL OR kind = $6)
+          AND ($7::text IS NULL OR status = $7)
+        ORDER BY name, code`,
+      [
+        ctx.tenantId,
+        isOrgWide,
+        allowedCampusIds,
+        allowedDeptIds,
+        filter?.campusId ?? null,
+        filter?.kind ?? null,
+        effectiveStatus,
+      ],
+    );
+
+    return res.rows.map((r) => ({
+      id: r.id,
+      organizationId: r.organization_id,
+      campusId: r.campus_id,
+      parentDepartmentId: r.parent_department_id,
+      name: r.name,
+      code: r.code,
+      kind: r.kind,
+      status: r.status,
+      deletedAt: r.deleted_at,
+      version: r.version,
+      createdAt: r.created_at,
+      updatedAt: r.updated_at,
+    }));
+  }
+
+  /**
    * Reads a department by ID within the caller's tenant.
-   * Authorizes itself with org.department.manage (organization or campus scope): 403 without the permission,
-   * 404 for a missing, other-tenant or out-of-scope department (indistinguishable). Soft-deleted rows are returned.
+   * Scoped to org.department.manage or org.structure.read.
+   * Department resources include both campus_id and department_id for grant evaluation.
+   * Managers can read soft-deleted or INACTIVE departments. Non-managers receive 404.
    */
   static async getById(
     tx: TenantTx,
@@ -442,9 +556,14 @@ export class DepartmentService {
       throw invalid('Invalid department ID.');
     }
 
-    // Permission held at all (403) BEFORE the lookup, so a caller without it learns nothing about existence.
-    await AuthorizationEngine.assert(tx, ctx, 'org.department.manage');
+    // 1. Permission held at all (throws 403 before any lookup if user holds no grant for either permission)
+    const isManager = await AuthorizationEngine.hasPermission(tx, ctx, 'org.department.manage');
+    const hasRead = await AuthorizationEngine.hasPermission(tx, ctx, 'org.structure.read');
+    if (!isManager && !hasRead) {
+      throw new AppError(403, 'FORBIDDEN', 'Access denied.');
+    }
 
+    // 2. Fetch row
     const res = await tx.query<{
       id: string;
       organization_id: string;
@@ -470,11 +589,42 @@ export class DepartmentService {
       throw resourceNotFound();
     }
 
-    // Scope check against the campus read from the database (never from the request); out of scope is 404.
-    await AuthorizationEngine.assert(tx, ctx, 'org.department.manage', {
-      organization_id: ctx.tenantId,
-      campus_id: r.campus_id,
-    });
+    // 3. Non-managers never see inactive or soft-deleted departments (identical 404)
+    if (!isManager && (r.deleted_at !== null || r.status === 'INACTIVE')) {
+      throw resourceNotFound();
+    }
+
+    // 4. Scoped permission check passing BOTH campus_id and department_id
+    let allowed = false;
+    if (isManager) {
+      try {
+        await AuthorizationEngine.assert(tx, ctx, 'org.department.manage', {
+          organization_id: ctx.tenantId,
+          campus_id: r.campus_id,
+          department_id: r.id,
+        });
+        allowed = true;
+      } catch {
+        // Not authorized under manage scope; check read scope below
+      }
+    }
+
+    if (!allowed && hasRead) {
+      try {
+        await AuthorizationEngine.assert(tx, ctx, 'org.structure.read', {
+          organization_id: ctx.tenantId,
+          campus_id: r.campus_id,
+          department_id: r.id,
+        });
+        allowed = true;
+      } catch {
+        // Not authorized under read scope
+      }
+    }
+
+    if (!allowed) {
+      throw resourceNotFound();
+    }
 
     return {
       id: r.id,

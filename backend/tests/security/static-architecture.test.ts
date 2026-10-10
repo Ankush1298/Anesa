@@ -169,15 +169,22 @@ describe('authorization architecture guardrails (Slice 3)', () => {
     const roleNames =
       /['"`](STUDENT|FACULTY|STAFF|HOD|DEPARTMENT_ADMIN|CAMPUS_ADMIN|COLLEGE_ADMIN|REGISTRAR|admin|ADMIN|superuser)['"`]/;
     const adhoc = /\.role\b|\.roles\b|\brole\s*(?:===|!==|==|!=)|actorKind\s*(?:===|!==|==|!=)/;
+    // Disambiguate designation category ('ADMIN') from role name 'ADMIN'
+    const stripDesignationCategory = (s: string) =>
+      s
+        .replace(/Type\.Literal\(['"`]ADMIN['"`]\)/g, '')
+        .replace(/category\s*!==\s*['"`]ADMIN['"`]/g, '');
     const offenders = modules.filter(
-      (f) => !f.path.endsWith('auth.service.ts') && (roleNames.test(f.text) || adhoc.test(f.text)),
+      (f) =>
+        !f.path.endsWith('auth.service.ts') &&
+        (roleNames.test(stripDesignationCategory(f.text)) || adhoc.test(f.text)),
     );
     expect(offenders.map((f) => f.path)).toEqual([]);
     // role names appear in code only in the role matrix and the DB-facing authorization layer
     const outside = code.filter(
       (f) =>
         !inAuthz(f.path) &&
-        roleNames.test(f.text) &&
+        roleNames.test(stripDesignationCategory(f.text)) &&
         !/\bSTUDENT\b|\bSTAFF\b/.test(f.text.replace(roleNames, '')),
     );
     expect(outside.map((f) => f.path)).toEqual([]);

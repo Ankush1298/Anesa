@@ -74,6 +74,9 @@ describe('migrations from a clean database', () => {
       '0007',
       '0008',
       '0009',
+      '0010',
+      '0011',
+      '0012',
     ]);
     expect(m.every((x) => /^[0-9a-f]{64}$/.test(x.checksum))).toBe(true);
   });
@@ -91,6 +94,9 @@ describe('migrations from a clean database', () => {
       '0007',
       '0008',
       '0009',
+      '0010',
+      '0011',
+      '0012',
     ]);
     const ledger = await one<{ version: string; checksum: string; applied_by: string }>(
       db.admin,
@@ -106,6 +112,9 @@ describe('migrations from a clean database', () => {
       '0007',
       '0008',
       '0009',
+      '0010',
+      '0011',
+      '0012',
     ]);
     expect(new Set(ledger.map((l) => l.applied_by))).toEqual(new Set(['app_migrator']));
     expect(ledger.map((l) => l.checksum.trim())).toEqual(loadMigrations().map((m) => m.checksum));
@@ -121,6 +130,9 @@ describe('migrations from a clean database', () => {
       '0007',
       '0008',
       '0009',
+      '0010',
+      '0011',
+      '0012',
     ]);
   });
 
@@ -148,7 +160,7 @@ describe('migrations from a clean database', () => {
     const db = await freshDatabase();
     await migrate({ connectionString: db.migrator, ...ALL });
     const dir = mkdtempSync(join(tmpdir(), 'campusos-mig-'));
-    for (const f of readdirSync(DEFAULT_MIGRATIONS_DIR).filter((x) => !x.startsWith('0009'))) {
+    for (const f of readdirSync(DEFAULT_MIGRATIONS_DIR).filter((x) => !x.startsWith('0012'))) {
       cpSync(join(DEFAULT_MIGRATIONS_DIR, f), join(dir, f));
     }
     await expect(migrate({ connectionString: db.migrator, dir })).rejects.toThrow(
@@ -219,6 +231,9 @@ describe('migrations from a clean database', () => {
       '0007',
       '0008',
       '0009',
+      '0010',
+      '0011',
+      '0012',
     ]);
     expect(await fingerprint(again.admin)).toBe(schemaBefore);
     await seedFixtures(again.admin); // seeds cleanly into the re-created schema

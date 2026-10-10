@@ -260,12 +260,100 @@ describe('CampusService.getById: valid reads, scoping, isolation, and error hand
     });
   });
 
-  it('unprivileged roles receive 403 FORBIDDEN when attempting to read a campus', async () => {
-    for (const actor of [CTX.studentA, CTX.facultyA, CTX.hodA, CTX.noroleA]) {
+  it('callers without permission receive 403 FORBIDDEN when attempting to read a campus', async () => {
+    await scratch(CTX.noroleA, async (tx, ctx) => {
+      expect(await status(CampusService.getById(tx, ctx, CAMPUS_1))).toBe(403);
+      expect(await status(CampusService.getById(tx, ctx, UNKNOWN_V7))).toBe(403);
+    });
+  });
+
+  it('STUDENT and FACULTY (organization-scoped) can read both CAMPUS_1 and CAMPUS_2', async () => {
+    for (const actor of [CTX.studentA, CTX.facultyA]) {
       await scratch(actor, async (tx, ctx) => {
-        expect(await status(CampusService.getById(tx, ctx, CAMPUS_1)), actor.user).toBe(403);
+        expect((await CampusService.getById(tx, ctx, CAMPUS_1)).id).toBe(CAMPUS_1);
+        expect((await CampusService.getById(tx, ctx, CAMPUS_2)).id).toBe(CAMPUS_2);
       });
     }
+  });
+
+  it('HOD (department-scoped to DEPT_1 on CAMPUS_1) can read CAMPUS_1 (parent campus) but gets 404 on CAMPUS_2', async () => {
+    await scratch(CTX.hodA, async (tx, ctx) => {
+      expect((await CampusService.getById(tx, ctx, CAMPUS_1)).id).toBe(CAMPUS_1);
+      expect(await status(CampusService.getById(tx, ctx, CAMPUS_2))).toBe(404);
+    });
+  });
+
+  it('inactive campus returns 404 to non-managers (studentA) but is readable by managers (staffA)', async () => {
+    await scratch(CTX.staffA, async (tx, ctx) => {
+      const cid = await CampusService.create(
+        tx,
+        ctx,
+        campus({ code: 'INACT_CAMP', name: 'Inactive Campus' }),
+      );
+      await CampusService.update(tx, ctx, cid, { status: 'INACTIVE' });
+
+      // Manager reads inactive campus: 200
+      expect((await CampusService.getById(tx, ctx, cid)).status).toBe('INACTIVE');
+
+      // Non-manager student gets 404 (indistinguishable from nonexistent)
+      const studentCtx = ctxOf(CTX.studentA);
+      expect(await status(CampusService.getById(tx, studentCtx, cid))).toBe(404);
+    });
+  });
+});
+
+describe('CampusService.list: scoping, filters, and inactive shielding', () => {
+  it('STUDENT receives all active campuses in their tenant', async () => {
+    await scratch(CTX.studentA, async (tx, ctx) => {
+      const list = await CampusService.list(tx, ctx);
+      expect(list.some((c) => c.id === CAMPUS_1)).toBe(true);
+      expect(list.some((c) => c.id === CAMPUS_2)).toBe(true);
+      expect(list.every((c) => c.organizationId === ORG_A)).toBe(true);
+    });
+  });
+
+  it('CAMPUS_ADMIN receives only their assigned campus', async () => {
+    await scratch(CTX.campusAdminA, async (tx, ctx) => {
+      const list = await CampusService.list(tx, ctx);
+      expect(list.map((c) => c.id)).toEqual([CAMPUS_1]);
+    });
+  });
+
+  it('HOD receives only the parent campus of their assigned department', async () => {
+    await scratch(CTX.hodA, async (tx, ctx) => {
+      const list = await CampusService.list(tx, ctx);
+      expect(list.map((c) => c.id)).toEqual([CAMPUS_1]);
+    });
+  });
+
+  it('non-managers never see inactive campuses even when explicitly filtering status=INACTIVE', async () => {
+    await scratch(CTX.staffA, async (tx, ctx) => {
+      const cid = await CampusService.create(
+        tx,
+        ctx,
+        campus({ code: 'INACT_L', name: 'Inactive For List' }),
+      );
+      await CampusService.update(tx, ctx, cid, { status: 'INACTIVE' });
+
+      // Manager can see inactive campus when requesting status=INACTIVE
+      const managerList = await CampusService.list(tx, ctx, { status: 'INACTIVE' });
+      expect(managerList.some((c) => c.id === cid)).toBe(true);
+
+      // Student receives empty array when filtering status=INACTIVE
+      const studentCtx = ctxOf(CTX.studentA);
+      const studentInactiveList = await CampusService.list(tx, studentCtx, { status: 'INACTIVE' });
+      expect(studentInactiveList).toEqual([]);
+
+      // Student default list excludes inactive campus
+      const studentDefaultList = await CampusService.list(tx, studentCtx);
+      expect(studentDefaultList.some((c) => c.id === cid)).toBe(false);
+    });
+  });
+
+  it('caller without permission receives 403 FORBIDDEN on list', async () => {
+    await scratch(CTX.noroleA, async (tx, ctx) => {
+      expect(await status(CampusService.list(tx, ctx))).toBe(403);
+    });
   });
 });
 

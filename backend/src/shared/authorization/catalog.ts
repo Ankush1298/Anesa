@@ -30,9 +30,11 @@ export const PERMISSION_CATALOG: readonly PermissionDef[] = [
   { code: 'student.profile.read', sensitivity: 'SENSITIVE' },
   { code: 'student.profile.read_sensitive', sensitivity: 'SENSITIVE' },
 
+  { code: 'org.structure.read', sensitivity: 'NORMAL' },
   { code: 'org.campus.manage', sensitivity: 'SENSITIVE' },
   { code: 'org.department.manage', sensitivity: 'SENSITIVE' },
   { code: 'org.settings.read', sensitivity: 'NORMAL' },
+  { code: 'org.settings.manage', sensitivity: 'CRITICAL' },
 
   { code: 'role.assignment.grant', sensitivity: 'CRITICAL' },
   { code: 'role.assignment.revoke', sensitivity: 'CRITICAL' },
