@@ -69,7 +69,7 @@ console.log(
 );
 if (result.deferred.length > 0) {
   console.warn(
-    `Deferred contract migration(s) [${result.deferred.join(', ')}]: run \`pnpm db:migrate -- --allow-contract ${result.blockedBy}\` only after the writers are upgraded.`,
+    `Deferred contract migration(s) [${result.deferred.join(', ')}]: run \`pnpm db:migrate --allow-contract ${result.blockedBy}\` only after the writers are upgraded.`,
   );
 }
 const stop = async (): Promise<void> => {

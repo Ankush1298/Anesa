@@ -45,7 +45,7 @@ The runner treats a migration whose name ends in `_contract` as gated: an ordina
 
 1. Release **0008** with the application build that writes `campus_id` / `department_id` (`pnpm db:migrate` — 0009 is reported as deferred).
 2. Upgrade and **drain every writer** of `app.role_assignments`: old instances, background jobs, seed and import scripts.
-3. Only then: `pnpm db:migrate -- --allow-contract 0009`.
+3. Only then: `pnpm db:migrate --allow-contract 0009`.
 4. 0009 locks the three tables, lets the owner see the rows (`NO FORCE` for the duration of the transaction; FORCE is restored and verified), runs a **fail-closed preflight with per-category counts** over rows of every status, backfills, verifies, extends the guard, swaps the constraint. Invalid legacy data (orphaned or cross-tenant scopes, contradictory typed ids, wrong-kind typed ids, unknown scope types) aborts the whole migration with nothing changed; it never repairs, revokes or deletes. Existing CAMPUS/DEPARTMENT assignments from before F2.1 reference campuses that did not exist, so a database that has any must be repaired by an administrator first.
 
 ## Verification map
