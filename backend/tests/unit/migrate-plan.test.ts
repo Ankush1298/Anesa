@@ -53,7 +53,7 @@ describe('migration plan: contract gate', () => {
     expect(plan.deferred).toEqual([]);
   });
 
-  it('the opt-in does not reorder: earlier pending migrations still run first', () => {
+  it('the opt-in does not reorder: on an empty ledger (fresh database) earlier migrations still run first, in one pass', () => {
     expect(versions(planMigrations(M, new Map(), ['0003']).run)).toEqual([
       '0001',
       '0002',
@@ -98,5 +98,136 @@ describe('migration plan: contract gate', () => {
     writeFileSync(join(dir, '0001_a.sql'), 'SELECT 1');
     writeFileSync(join(dir, '0003_b_contract.sql'), 'SELECT 1');
     expect(() => loadMigrations(dir)).toThrow(/contiguous/);
+  });
+});
+
+// PHASE BOUNDARY (F2.11): on an existing database the contract migration must be the first thing an invocation
+// applies. The ledger is the only input, so these tests prove the planner's decision, not that the application was
+// deployed or the writers drained (that remains the operator's responsibility).
+describe('migration plan: phase boundary', () => {
+  const REFUSED = /cannot run in the same invocation as pending/;
+
+  it('refuses the contract migration while an earlier migration is pending on an existing database', () => {
+    // 0001 applied; 0002 (expand) pending; naming 0003 must not also apply 0002
+    expect(() => planMigrations(M, applied('0001'), ['0003'])).toThrow(REFUSED);
+    expect(() => planMigrations(M, applied('0001'), ['0003'])).toThrow(/pending 0002\./);
+    expect(() => planMigrations(M, applied('0001'), ['0003'])).toThrow(/Nothing was applied/);
+  });
+
+  it('the refusal tells the operator the two-step order and keeps the exact-version confirmation', () => {
+    expect(() => planMigrations(M, applied('0001'), ['0003'])).toThrow(
+      /pnpm db:migrate`.*then run `pnpm db:migrate --allow-contract 0003`/s,
+    );
+  });
+
+  it('the ordinary run on the same ledger applies only the expand migration and still defers the rest', () => {
+    const plan = planMigrations(M, applied('0001'));
+    expect(versions(plan.run)).toEqual(['0002']);
+    expect(versions(plan.deferred)).toEqual(['0003', '0004']);
+  });
+
+  it('allows the contract migration once everything before it is applied (and later ones follow)', () => {
+    const plan = planMigrations(M, applied('0001', '0002'), ['0003']);
+    expect(versions(plan.run)).toEqual(['0003', '0004']);
+  });
+
+  it('naming an already-applied contract migration is a harmless no-op', () => {
+    const plan = planMigrations(M, applied('0001', '0002', '0003', '0004'), ['0003']);
+    expect(plan.run).toEqual([]);
+    expect(plan.deferred).toEqual([]);
+  });
+
+  it('an empty ledger (brand-new database) may be built in one pass', () => {
+    expect(versions(planMigrations(M, new Map(), ['0003']).run)).toEqual([
+      '0001',
+      '0002',
+      '0003',
+      '0004',
+    ]);
+  });
+
+  it('every contract migration needs its own invocation: a second one behind other work is refused', () => {
+    const two = [
+      mig('0001', 'base'),
+      mig('0002', 'first_contract'),
+      mig('0003', 'expand_again'),
+      mig('0004', 'second_contract'),
+    ];
+    const done = new Map([['0001', two[0]!.checksum]]);
+    // 0002 is first (allowed) but 0004 follows 0002 and 0003 in the same invocation
+    expect(() => planMigrations(two, done, ['0002', '0004'])).toThrow(REFUSED);
+    // separate invocations are fine
+    const d3 = new Map(two.slice(0, 3).map((m) => [m.version, m.checksum]));
+    expect(versions(planMigrations(two, done, ['0002']).run)).toEqual(['0002', '0003']);
+    expect(versions(planMigrations(two, d3, ['0004']).run)).toEqual(['0004']);
+  });
+
+  it('a ledger that is not a contiguous prefix is refused before anything is planned', () => {
+    // 0003 recorded but 0002 missing: out-of-order, cannot be produced by the runner
+    expect(() => planMigrations(M, applied('0001', '0003'))).toThrow(/not a contiguous prefix/);
+    expect(() => planMigrations(M, applied('0003'), ['0003'])).toThrow(/not a contiguous prefix/);
+    expect(() => planMigrations(M, applied('0002'))).toThrow(/0002 is recorded but 0001 is not/);
+  });
+
+  describe('against the real migrations 0007 / 0008 / 0009', () => {
+    const all = loadMigrations();
+    const upTo = (n: number): Map<string, string> =>
+      new Map(all.filter((m) => Number(m.version) <= n).map((m) => [m.version, m.checksum]));
+
+    it('ledger at 0007: the ordinary run applies 0008 and defers 0009', () => {
+      const plan = planMigrations(all, upTo(7));
+      expect(versions(plan.run)).toEqual(['0008']);
+      expect(versions(plan.deferred)).toEqual(['0009']);
+    });
+
+    it('ledger at 0007: --allow-contract 0009 is REFUSED, so 0008 and 0009 are not run in one invocation', () => {
+      expect(() => planMigrations(all, upTo(7), ['0009'])).toThrow(REFUSED);
+      expect(() => planMigrations(all, upTo(7), ['0009'])).toThrow(/pending 0008\./);
+    });
+
+    it('ledger anywhere before 0008: --allow-contract 0009 is refused, whatever else is pending', () => {
+      for (const n of [1, 2, 3, 4, 5, 6]) {
+        expect(() => planMigrations(all, upTo(n), ['0009']), `ledger at 000${n}`).toThrow(REFUSED);
+      }
+    });
+
+    it('ledger at 0008: --allow-contract 0009 runs exactly 0009; without the flag it stays deferred', () => {
+      expect(versions(planMigrations(all, upTo(8), ['0009']).run)).toEqual(['0009']);
+      const ordinary = planMigrations(all, upTo(8));
+      expect(ordinary.run).toEqual([]);
+      expect(versions(ordinary.deferred)).toEqual(['0009']);
+    });
+
+    it('ledger at 0009: nothing to run, with or without the flag', () => {
+      for (const allow of [[], ['0009']]) {
+        const plan = planMigrations(all, upTo(9), allow);
+        expect(plan.run).toEqual([]);
+        expect(plan.deferred).toEqual([]);
+      }
+    });
+
+    it('empty ledger: a brand-new database is built in one pass when 0009 is named', () => {
+      expect(versions(planMigrations(all, new Map(), ['0009']).run)).toEqual(
+        all.map((m) => m.version),
+      );
+    });
+
+    it('inconsistent ledgers are refused: 0009 without 0008, a gap, or a version missing from source control', () => {
+      const without0008 = upTo(9);
+      without0008.delete('0008');
+      expect(() => planMigrations(all, without0008, ['0009'])).toThrow(/not a contiguous prefix/);
+      const gap = upTo(7);
+      gap.delete('0004');
+      expect(() => planMigrations(all, gap)).toThrow(/not a contiguous prefix/);
+      expect(() => planMigrations(all, new Map([...upTo(9), ['0010', 'x']]))).toThrow(
+        /missing from source control/,
+      );
+    });
+
+    it('a changed checksum is still reported as drift, not as a phase problem', () => {
+      const drifted = upTo(8);
+      drifted.set('0008', 'f'.repeat(64));
+      expect(() => planMigrations(all, drifted, ['0009'])).toThrow(/checksum drift/);
+    });
   });
 });

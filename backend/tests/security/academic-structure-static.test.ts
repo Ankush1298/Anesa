@@ -244,3 +244,34 @@ describe('role_assignments writers satisfy the typed-scope contract', () => {
     }
   });
 });
+
+// The empty-ledger exemption in tools/db/migrate.ts (planMigrations: the phase rule applies only when `done.size > 0`)
+// lets a BRAND-NEW database be built in one pass 0001..0009. That is safe only because the three tables 0009 rewrites
+// are created by a plain `CREATE TABLE` in the same pass: if one of them already existed (legacy rows, a lost
+// ledger), the pass would stop at that statement and never reach 0009. `IF NOT EXISTS` on any of them, or a second
+// creator, would silently open that bypass (integration proof: tests/integration/migration-contract.test.ts).
+describe('empty-ledger exemption premise: the contract tables are created by a plain CREATE TABLE', () => {
+  const migrations = readdirSync(resolve(root, 'database/migrations'))
+    .filter((f) => f.endsWith('.sql'))
+    .sort()
+    .map((file) => ({ file, sql: noComments(read(`database/migrations/${file}`)) }));
+  const creations = (table: string): { file: string; statement: string }[] =>
+    migrations.flatMap((m) =>
+      [
+        ...m.sql.matchAll(
+          new RegExp(`CREATE\\s+TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?app\\.${table}\\s*\\(`, 'gi'),
+        ),
+      ].map((hit) => ({ file: m.file, statement: hit[0].replace(/\s+/g, ' ') })),
+    );
+
+  it.each([
+    ['role_assignments', '0005_authorization.sql'],
+    ['campuses', '0008_academic_structure.sql'],
+    ['departments', '0008_academic_structure.sql'],
+  ])(
+    'app.%s is created exactly once, by a plain CREATE TABLE (never IF NOT EXISTS)',
+    (table, file) => {
+      expect(creations(table)).toEqual([{ file, statement: `CREATE TABLE app.${table} (` }]);
+    },
+  );
+});

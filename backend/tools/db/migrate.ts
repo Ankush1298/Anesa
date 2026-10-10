@@ -7,6 +7,10 @@
  *    never runs in an ordinary invocation. The run applies everything before it, STOPS at the first such
  *    migration (nothing after it is applied either, because later migrations may depend on it) and reports it
  *    as deferred. It runs only when the operator names its exact version in `allowContract`.
+ *  - PHASE BOUNDARY: on an existing database (non-empty ledger) a contract migration must be the first migration
+ *    an invocation applies, so the expand migration, the application deploy and the writer drain happen in an
+ *    earlier invocation; otherwise the plan is refused before any migration SQL runs (see planMigrations). The ledger
+ *    cannot prove the deploy or the drain happened: that stays the operator's responsibility.
  * Never imported by src/ (the running application has no migration capability).
  */
 import { createHash } from 'node:crypto';
@@ -105,6 +109,18 @@ export function planMigrations(
       throw new Error(`Database has migration ${v} that is missing from source control`);
     }
   }
+  // The runner applies migrations in order and records each one atomically with its DDL, so the applied versions
+  // are always a prefix 0001..N. A gap (0009 recorded but 0008 not) cannot come from the runner: something else
+  // changed the database. Applying the missing earlier migration after a later one would be out of order.
+  [...done.keys()].sort().forEach((v, i) => {
+    const expected = migrations[i]?.version;
+    if (v !== expected) {
+      throw new Error(
+        `Migration ledger is not a contiguous prefix of the migrations in source control: ${v} is recorded but ${expected} is not. ` +
+          'Refusing to apply anything; the runner cannot produce this state, so find out what changed the database first.',
+      );
+    }
+  });
   const plan: MigrationPlan = { alreadyApplied: [], run: [], deferred: [] };
   let blocked = false;
   for (const m of migrations) {
@@ -122,6 +138,34 @@ export function planMigrations(
     } else {
       plan.run.push(m);
     }
+  }
+  // PHASE BOUNDARY: on an existing database a contract migration must be the FIRST thing an invocation applies.
+  // Between the expand migration and the contract one the operator deploys the new application and drains every
+  // legacy writer; naming the contract version must never also apply a pending expand (or anything else) in the
+  // same breath, because that skips the interval. Refused here, before any migration SQL is sent (the runner has only
+  // connected, taken its advisory lock and ensured the ledger table exists). An EMPTY ledger is a
+  // brand-new database: nothing was ever deployed against it, there is no writer to drain, and the disposable test
+  // databases are built in one pass.
+  // WHY THE EXEMPTION IS NARROW: it tests only the ledger, so it rests on one property of the migration files: they
+  // create their objects with a plain CREATE (no IF NOT EXISTS). A one-pass run therefore reaches the contract
+  // migration only if role_assignments, campuses and departments were created in THIS pass; if any pre-existed
+  // (legacy rows, a lost or truncated ledger, a schema built by only some migrations) the pass stops at that
+  // statement. Pinned by tests/security/academic-structure-static.test.ts, exercised by
+  // tests/integration/migration-contract.test.ts.
+  if (done.size > 0) {
+    plan.run.forEach((m, i) => {
+      if (i > 0 && isContractMigration(m)) {
+        throw new Error(
+          `Contract migration ${m.version}_${m.name} cannot run in the same invocation as pending ${plan.run
+            .slice(0, i)
+            .map((x) => x.version)
+            .join(
+              ', ',
+            )}. Run \`pnpm db:migrate\` first (it applies only the ordinary migrations), deploy the ` +
+            `application and drain every legacy writer, then run \`pnpm db:migrate --allow-contract ${m.version}\`. Nothing was applied.`,
+        );
+      }
+    });
   }
   return plan;
 }
@@ -157,7 +201,7 @@ export async function migrate(opts: {
       );
       for (const r of rows) done.set(r.version, r.checksum.trim());
 
-      // Validation, drift detection and the contract gate are decided BEFORE anything is applied.
+      // Validation, drift detection and the contract gate are decided before any migration SQL is sent.
       const plan = planMigrations(migrations, done, opts.allowContract ?? []);
       const result: MigrateResult = {
         applied: [],

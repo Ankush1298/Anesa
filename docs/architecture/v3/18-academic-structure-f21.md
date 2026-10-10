@@ -41,7 +41,9 @@ A campus timezone decides which calendar day a session belongs to.
 * Tests: `tests/integration/scope-locking.test.ts` (two real connections, both orderings).
 
 ## Rollout (expand → drain → contract)
-The runner treats a migration whose name ends in `_contract` as gated: an ordinary run applies everything before it, **stops at the first one, applies nothing after it, reports it as deferred**. Only `--allow-contract <exact version>` runs it (no environment variable, no wildcard; a wrong or non-contract version is an error before anything runs). `pnpm dev:db` never authorises it.
+The runner treats a migration whose name ends in `_contract` as gated: an ordinary run applies everything before it, **stops at the first one, applies nothing after it, reports it as deferred**. Only `--allow-contract <exact version>` runs it (no environment variable, no wildcard; a wrong or non-contract version is an error before any migration SQL is sent). `pnpm dev:db` never authorises it.
+
+**Phase boundary (F2.11).** On an existing database (non-empty ledger) a contract migration must be the **first** migration an invocation applies. `pnpm db:migrate --allow-contract 0009` while 0008 is still pending is refused by the planner before any migration SQL is sent (nothing is applied); the operator runs `pnpm db:migrate` first, deploys and drains, then names `0009`. An applied-versions list that is not a contiguous prefix `0001..N` is refused too. An empty ledger (a brand-new database: nothing deployed, no writer to drain) may be built in one pass. This exemption tests only the ledger, so it rests on one property of the migration files: the tables 0009 rewrites (`role_assignments`, `campuses`, `departments`) are created by a plain `CREATE TABLE` in the same pass, so a one-pass run reaches 0009 only if they did not pre-exist. A truncated or missing ledger on a populated database, a schema built by only some migrations, or a lone pre-existing table stops the pass at the first conflicting object (nothing in 0001-0009 uses `IF NOT EXISTS`). The ledger cannot prove that the application was deployed or the writers drained; that remains the operator's responsibility (steps 2-3 below). Each further contract migration needs its own invocation.
 
 1. Release **0008** with the application build that writes `campus_id` / `department_id` (`pnpm db:migrate` — 0009 is reported as deferred).
 2. Upgrade and **drain every writer** of `app.role_assignments`: old instances, background jobs, seed and import scripts.
@@ -52,6 +54,8 @@ The runner treats a migration whose name ends in `_contract` as gated: an ordina
 | Property | Test |
 |---|---|
 | Gate logic (deferral, opt-in, wrong version, order, applied, drift) | `tests/unit/migrate-plan.test.ts` |
+| Phase boundary (0007/0008/0009 ledgers, empty ledger, inconsistent ledgers) | `tests/unit/migrate-plan.test.ts`; end to end at 0007 in `tests/integration/migration-contract.test.ts` |
+| Exemption cannot be abused (truncated/missing/partial ledger, partial schema, lone legacy table; a refusal sends no migration SQL) | `tests/integration/migration-contract.test.ts`; premise (plain `CREATE TABLE`) pinned in `tests/security/academic-structure-static.test.ts` |
 | Gate against a database; blocked/ordered/failed contract migration | `tests/integration/migration-contract.test.ts` |
 | 0009 success and six failure classes with full rollback comparison | `tests/integration/migration-contract.test.ts` |
 | Grant dual-write, lifecycle 404s, ordering | `tests/integration/assignments.test.ts` |

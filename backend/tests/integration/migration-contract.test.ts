@@ -1,4 +1,5 @@
-import { cpSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { cpSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import pg from 'pg';
@@ -35,6 +36,51 @@ const constraintNames = async (db: FreshDb): Promise<string[]> =>
     )
   ).map((r) => r.conname);
 
+/** Full ledger rows: a refused or failed run must leave these unchanged, not just the list of versions. */
+const ledgerRows = (db: FreshDb) =>
+  sql<{ version: string; name: string; checksum: string; applied_at: Date }>(
+    db.admin,
+    'SELECT version, name, checksum, applied_at FROM platform.schema_migrations ORDER BY version',
+  );
+/**
+ * Everything a migration could have changed in app/platform EXCEPT the ledger itself (a failed run may re-create an
+ * empty ledger table): relations with their RLS flags, constraints, function bodies and policies.
+ */
+const objects = async (db: FreshDb): Promise<string> =>
+  JSON.stringify(
+    await sql(
+      db.admin,
+      `SELECT 'rel' AS k, n.nspname || '.' || c.relname || ':' || c.relkind::text || c.relrowsecurity::text || c.relforcerowsecurity::text AS v
+         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname IN ('app', 'platform') AND c.relname NOT LIKE 'schema\\_migrations%'
+       UNION ALL
+       SELECT 'con', conrelid::regclass::text || ':' || conname || ':' || pg_get_constraintdef(oid)
+         FROM pg_constraint
+        WHERE connamespace IN ('app'::regnamespace, 'platform'::regnamespace)
+          AND conrelid IS DISTINCT FROM to_regclass('platform.schema_migrations')
+       UNION ALL
+       SELECT 'fn', p.oid::regprocedure::text || ':' || md5(pg_get_functiondef(p.oid))
+         FROM pg_proc p WHERE p.pronamespace IN ('app'::regnamespace, 'platform'::regnamespace) AND p.prokind = 'f'
+       UNION ALL
+       SELECT 'pol', polrelid::regclass::text || ':' || polname FROM pg_policy
+       ORDER BY 1, 2`,
+    ),
+  );
+/** A temp directory holding exactly these migration files. */
+const dirWith = (files: Record<string, string>): string => {
+  const dir = mkdtempSync(join(tmpdir(), 'campusos-phase-'));
+  for (const [name, text] of Object.entries(files)) writeFileSync(join(dir, name), text);
+  return dir;
+};
+/** A copy of the REAL migrations 0001..n (a database "at 000n"). */
+const realUpTo = (n: number): string => {
+  const dir = mkdtempSync(join(tmpdir(), 'campusos-upto-'));
+  for (const f of readdirSync(DEFAULT_MIGRATIONS_DIR)) {
+    if (Number(f.slice(0, 4)) <= n) cpSync(join(DEFAULT_MIGRATIONS_DIR, f), join(dir, f));
+  }
+  return dir;
+};
+
 describe('contract gate against a real database', () => {
   it('an ordinary run applies 0001-0008, defers 0009 and stays deferred on every later run', async () => {
     const db = await freshDatabase();
@@ -67,6 +113,41 @@ describe('contract gate against a real database', () => {
     }
     expect(await ledgerOf(db)).toEqual([]);
     expect(await sql(db.admin, `SELECT to_regclass('app.campuses') AS t`)).toEqual([{ t: null }]);
+  });
+
+  it('a database at 0007: --allow-contract 0009 is refused before any migration SQL is sent; the two steps then succeed in order', async () => {
+    const db = await freshDatabase();
+    // a database whose ledger is exactly 0001-0007 (the state before the academic-structure rollout)
+    const at0007 = APPLIED_BY_DEFAULT.slice(0, 7);
+    expect((await migrate({ connectionString: db.migrator, dir: realUpTo(7) })).applied).toEqual(
+      at0007,
+    );
+    const ledgerBefore = await ledgerRows(db);
+
+    // The planner refuses BEFORE any migration SQL is sent: neither 0008 nor 0009 is applied, nothing is half-done.
+    await expect(
+      migrate({ connectionString: db.migrator, allowContract: ['0009'] }),
+    ).rejects.toThrow(/cannot run in the same invocation as pending 0008/);
+    expect(await ledgerOf(db)).toEqual(at0007);
+    expect(await ledgerRows(db)).toEqual(ledgerBefore); // no row added, changed or re-stamped
+    expect(await sql(db.admin, `SELECT to_regclass('app.campuses') AS t`)).toEqual([{ t: null }]);
+    expect(
+      await sql(
+        db.admin,
+        `SELECT 1 FROM information_schema.columns
+          WHERE table_schema = 'app' AND table_name = 'role_assignments' AND column_name IN ('campus_id', 'department_id')`,
+      ),
+    ).toHaveLength(0);
+    expect(await constraintNames(db)).toContain('ra_scope_id_check');
+
+    // The documented order still works: ordinary run (0008 only, 0009 deferred), then the explicit opt-in (0009 only).
+    const step1 = await migrate({ connectionString: db.migrator });
+    expect(step1.applied).toEqual(['0008']);
+    expect(step1.deferred).toEqual(['0009']);
+    const step2 = await migrate({ connectionString: db.migrator, allowContract: ['0009'] });
+    expect(step2.applied).toEqual(['0009']);
+    expect(await ledgerOf(db)).toEqual([...APPLIED_BY_DEFAULT, '0009']);
+    expect(await constraintNames(db)).toContain('ra_scope_integrity_ck');
   });
 
   it('stops at the first blocked contract migration; later migrations never run ahead of it; a failing contract migration rolls back', async () => {
@@ -444,4 +525,168 @@ $inj$;
     const retry = await migrate({ connectionString: db.migrator, allowContract: ['0009'] });
     expect(retry.applied).toEqual(['0009']);
   });
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// Phase boundary (R1/R2) and the empty-ledger exemption. DISPOSABLE databases only.
+// ---------------------------------------------------------------------------------------------------------
+describe('phase boundary: a refusal happens before any migration SQL and before any ledger change', () => {
+  // nextval() is NOT transactional. If ANY statement of a pending migration had been sent (even one the runner then
+  // rolled back), the sequence would report is_called = true. A refusal that leaves it false proves no migration SQL ran.
+  const BASE = { '0001_base.sql': 'CREATE SEQUENCE app.phase_probe;' };
+  const ALL = {
+    ...BASE,
+    '0002_expand.sql': "SELECT nextval('app.phase_probe');",
+    '0003_tighten_contract.sql': "SELECT nextval('app.phase_probe');",
+  };
+  const probe = async (db: FreshDb) =>
+    (
+      await sql<{ is_called: boolean; last_value: string }>(
+        db.admin,
+        'SELECT is_called, last_value FROM app.phase_probe',
+      )
+    )[0];
+
+  it('R1: the contract opt-in while an earlier migration is pending sends no migration SQL and changes no ledger row; the two steps then work', async () => {
+    const db = await freshDatabase();
+    const base = dirWith(BASE);
+    const all = dirWith(ALL);
+    expect((await migrate({ connectionString: db.migrator, dir: base })).applied).toEqual(['0001']);
+    const before = await ledgerRows(db);
+
+    await expect(
+      migrate({ connectionString: db.migrator, dir: all, allowContract: ['0003'] }),
+    ).rejects.toThrow(/cannot run in the same invocation as pending 0002/);
+    expect(await probe(db)).toMatchObject({ is_called: false }); // neither 0002 nor 0003 was executed
+    expect(await ledgerRows(db)).toEqual(before);
+
+    // control: the probe does detect execution, and the documented order still works
+    const ordinary = await migrate({ connectionString: db.migrator, dir: all });
+    expect(ordinary.applied).toEqual(['0002']);
+    expect(ordinary.deferred).toEqual(['0003']);
+    expect(await probe(db)).toMatchObject({ is_called: true, last_value: '1' });
+    const contract = await migrate({
+      connectionString: db.migrator,
+      dir: all,
+      allowContract: ['0003'],
+    });
+    expect(contract.applied).toEqual(['0003']);
+    expect(await probe(db)).toMatchObject({ is_called: true, last_value: '2' });
+  });
+
+  it('R2: a ledger with a gap is refused, with or without the opt-in, before any migration SQL', async () => {
+    const db = await freshDatabase();
+    const all = dirWith(ALL);
+    await migrate({ connectionString: db.migrator, dir: dirWith(BASE) });
+    // 0003 recorded but 0002 not: a state the runner cannot produce. The REAL checksum is used so that, without the
+    // prefix rule, nothing else would refuse: 0002 would be planned and executed (and the probe would show it).
+    await sql(
+      db.admin,
+      `INSERT INTO platform.schema_migrations (version, name, checksum) VALUES ('0003', 'tighten_contract', $1)`,
+      [createHash('sha256').update(ALL['0003_tighten_contract.sql']).digest('hex')],
+    );
+    const before = await ledgerRows(db);
+    for (const allowContract of [[], ['0003']]) {
+      await expect(
+        migrate({ connectionString: db.migrator, dir: all, allowContract }),
+      ).rejects.toThrow(/not a contiguous prefix.*0003 is recorded but 0002 is not/s);
+    }
+    expect(await probe(db)).toMatchObject({ is_called: false });
+    expect(await ledgerRows(db)).toEqual(before);
+  });
+});
+
+describe('empty-ledger exemption: only a genuinely fresh database can be built in one pass', () => {
+  // The exemption is `done.size === 0` in planMigrations. These tests try to satisfy it on databases that are NOT
+  // fresh. The first two tests must leave every relation, constraint, function, policy and RLS flag as it was, with
+  // the strict 0009 constraint in place. In the hand-made-table cases the pass stops at the first conflicting CREATE
+  // TABLE: earlier migrations of the same pass legitimately stay committed, the legacy data is kept, 0009 is not reached.
+  it('a populated database with a truncated, missing or partial ledger is refused or rolled back, 0009 is not applied', async () => {
+    const db = await freshDatabase();
+    // the legitimate use of the exemption: a brand-new database in one pass
+    const built = await migrate({ connectionString: db.migrator, allowContract: ['0009'] });
+    expect(built.applied).toEqual([...APPLIED_BY_DEFAULT, '0009']);
+    const rows = await ledgerRows(db);
+    const baseline = await objects(db);
+    const restoreLedger = async (upTo: number): Promise<void> => {
+      await sql(db.admin, 'TRUNCATE platform.schema_migrations');
+      for (const r of rows.filter((x) => Number(x.version) <= upTo)) {
+        await sql(
+          db.admin,
+          'INSERT INTO platform.schema_migrations (version, name, checksum, applied_at) VALUES ($1, $2, $3, $4)',
+          [r.version, r.name, r.checksum, r.applied_at],
+        );
+      }
+    };
+    const refused = async (message: RegExp, ledger: string[]): Promise<void> => {
+      await expect(
+        migrate({ connectionString: db.migrator, allowContract: ['0009'] }),
+      ).rejects.toThrow(message);
+      expect(await objects(db)).toBe(baseline);
+      expect(await ledgerOf(db)).toEqual(ledger);
+    };
+
+    await sql(db.admin, 'TRUNCATE platform.schema_migrations'); // truncated ledger
+    await refused(/already exists/, []);
+    await sql(db.admin, 'DROP TABLE platform.schema_migrations'); // missing ledger (the runner re-creates it, empty)
+    await refused(/already exists/, []);
+    await restoreLedger(3); // partial ledger: not empty, so the phase rule applies
+    await refused(/cannot run in the same invocation as pending 0004, 0005, 0006, 0007, 0008/, [
+      '0001',
+      '0002',
+      '0003',
+    ]);
+    await restoreLedger(8); // only the 0009 row missing on an already-contracted schema
+    await refused(/ra_scope_id_check.*does not exist/, APPLIED_BY_DEFAULT);
+    expect(await constraintNames(db)).toContain('ra_scope_integrity_ck');
+  });
+
+  it('a schema built by only SOME early migrations whose ledger was lost is refused at the first conflicting object', async () => {
+    const db = await freshDatabase();
+    expect((await migrate({ connectionString: db.migrator, dir: realUpTo(4) })).applied).toEqual([
+      '0001',
+      '0002',
+      '0003',
+      '0004',
+    ]);
+    await sql(db.admin, 'DROP TABLE platform.schema_migrations');
+    const baseline = await objects(db);
+    await expect(
+      migrate({ connectionString: db.migrator, allowContract: ['0009'] }),
+    ).rejects.toThrow(/already exists/);
+    expect(await objects(db)).toBe(baseline);
+    expect(await ledgerOf(db)).toEqual([]);
+    expect(await sql(db.admin, `SELECT to_regclass('app.role_assignments') AS t`)).toEqual([
+      { t: null },
+    ]); // 0005 was never reached, let alone 0009
+  });
+
+  // The sole barrier when ONE legacy table exists alone is the plain `CREATE TABLE` of that table (pinned by a
+  // static test in academic-structure-static.test.ts). The pass stops there, never reaches 0009, keeps the data.
+  it.each([
+    ['role_assignments', ['0001', '0002', '0003', '0004']],
+    ['campuses', ['0001', '0002', '0003', '0004', '0005', '0006', '0007']],
+    ['departments', ['0001', '0002', '0003', '0004', '0005', '0006', '0007']],
+  ])(
+    'a hand-made app.%s (the only object that pre-exists) stops the one-pass build at its CREATE TABLE and keeps its data',
+    async (table, ledger) => {
+      const db = await freshDatabase();
+      await sql(db.admin, `CREATE TABLE app.${table} (legacy int)`);
+      await sql(db.admin, `INSERT INTO app.${table} VALUES (42)`);
+      await expect(
+        migrate({ connectionString: db.migrator, allowContract: ['0009'] }),
+      ).rejects.toThrow(new RegExp(`relation "${table}" already exists`));
+      expect(await ledgerOf(db)).toEqual(ledger); // earlier migrations stay committed; 0009 was not applied
+      expect(await sql(db.admin, `SELECT * FROM app.${table}`)).toEqual([{ legacy: 42 }]);
+      expect(
+        await sql(db.admin, `SELECT 1 FROM pg_constraint WHERE conname = 'ra_scope_integrity_ck'`),
+      ).toHaveLength(0);
+      if (table === 'departments') {
+        // 0008 failed at its second CREATE TABLE and rolled back as a whole, campuses included
+        expect(await sql(db.admin, `SELECT to_regclass('app.campuses') AS t`)).toEqual([
+          { t: null },
+        ]);
+      }
+    },
+  );
 });
