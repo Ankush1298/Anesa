@@ -13,6 +13,54 @@ export interface DevSeedTargetOptions {
   allowTestDb?: boolean;
   expectedDbName?: string;
   expectedPort?: number;
+  /** Test harness only: explicitly authorizes disposable container test database when validated */
+  allowContainerTestDb?: boolean;
+  /**
+   * Container path only. The per-run marker the test harness stamped on the database it created
+   * (`COMMENT ON DATABASE`, tests/support/global-db.ts). The probe requires the session's database to carry
+   * exactly this comment. A pre-existing or persistent database, even one with a look-alike name on a 172.x
+   * address, does not have it. LIMIT: this proves the harness created the database in this run; it cannot prove the
+   * server TEST_DATABASE_URL points at is itself disposable (whoever sets that superuser URL already authorizes the
+   * harness to create and drop databases there).
+   */
+  disposableMarker?: string;
+}
+
+export const FORBIDDEN_TEST_DB_NAMES = [
+  'campusos_dev',
+  'campusos_prod',
+  'production',
+  'prod',
+  'staging',
+  'postgres',
+  'template0',
+  'template1',
+];
+
+// Exactly the names the test harness generates (tests/support/global-db.ts: 6 random bytes; fresh-db.ts: 5 bytes).
+export const DISPOSABLE_TEST_DB_PATTERN = /^campusos_(?:test_[0-9a-f]{12}|mig_[0-9a-f]{10})$/;
+
+/**
+ * True only for 172.16.0.0/12, the range Docker bridge networks (and the GitHub Actions service container) use.
+ * This is NOT trust on its own: it is one of several conditions of the explicit container test path in
+ * probeLocalDevDatabase. 10.0.0.0/8 and 192.168.0.0/16 are deliberately not accepted (not needed by CI; they are
+ * common LAN/VPC ranges where a real remote database could live).
+ */
+export function isPrivateContainerIp(ip: string | null | undefined): boolean {
+  if (!ip) return false;
+  const m = /^172\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/.exec(ip);
+  if (!m) return false;
+  const octets = ip.split('.').map(Number);
+  if (octets.some((o) => o > 255)) return false;
+  const second = octets[1] as number;
+  return second >= 16 && second <= 31;
+}
+
+export interface DevSeedProbeClient {
+  query: (
+    queryText: string,
+    values?: readonly unknown[],
+  ) => Promise<{ rows: readonly Record<string, unknown>[] }>;
 }
 
 export interface DevAdminSeedOptions {
@@ -81,6 +129,13 @@ export function verifyLocalDevDatabaseUrl(
         `Refusing to seed: target database "${targetDbName}" does not match development database "${expectedDbName}".`,
       );
     }
+  } else {
+    const targetDbName = decodeURIComponent(parsed.pathname.slice(1));
+    if (FORBIDDEN_TEST_DB_NAMES.includes(targetDbName.toLowerCase())) {
+      throw new Error(
+        `Refusing to seed: target database "${targetDbName}" is a protected persistent or production target.`,
+      );
+    }
   }
 
   return parsed;
@@ -88,25 +143,48 @@ export function verifyLocalDevDatabaseUrl(
 
 /**
  * Probes the connected PostgreSQL session to verify server-side attributes.
- * Aborts if the target server identity does not match the local development database.
+ * Aborts if the target server identity does not match the local development database
+ * or an explicitly authorized, validated disposable test container.
  */
 export async function probeLocalDevDatabase(
-  client: pg.Client,
+  client: DevSeedProbeClient,
   options: DevSeedTargetOptions = {},
 ): Promise<{ database: string; user: string; port: number; hostAddr: string | null }> {
-  const res = await client.query<{
-    current_db: string;
-    current_usr: string;
-    srv_port: number;
-    srv_host: string | null;
-  }>(`
-    SELECT current_database() AS current_db,
-           current_user AS current_usr,
-           inet_server_port() AS srv_port,
-           host(inet_server_addr()) AS srv_host;
-  `);
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('Refusing to seed: NODE_ENV is set to "production".');
+  }
 
-  const row = res.rows[0];
+  let res: {
+    rows: {
+      current_db: string;
+      current_usr: string;
+      srv_port: number;
+      srv_host: string | null;
+      db_comment?: string | null;
+    }[];
+  };
+  try {
+    res = (await client.query(`
+      SELECT current_database() AS current_db,
+             current_user AS current_usr,
+             inet_server_port() AS srv_port,
+             host(inet_server_addr()) AS srv_host,
+             (SELECT shobj_description(d.oid, 'pg_database') FROM pg_database d
+               WHERE d.datname = current_database()) AS db_comment;
+    `)) as unknown as typeof res;
+  } catch (err) {
+    const rawMsg = err instanceof Error ? err.message : String(err);
+    const sanitized = rawMsg
+      .replace(/postgres(?:ql)?:\/\/[^\s]+/gi, '[REDACTED_URL]')
+      .replace(/:[^:@\s]+@/g, ':[REDACTED_PASSWORD]@');
+    const finalMsg = options.disposableMarker
+      ? sanitized.replaceAll(options.disposableMarker, '[REDACTED_MARKER]')
+      : sanitized;
+    // eslint-disable-next-line preserve-caught-error -- attaching the raw cause would re-expose the connection string / password this block just redacted
+    throw new Error(`Refusing to seed: database probe query failed: ${finalMsg}`);
+  }
+
+  const row = res.rows?.[0];
   if (!row) {
     throw new Error('Refusing to seed: failed to probe target PostgreSQL server identity.');
   }
@@ -134,11 +212,91 @@ export async function probeLocalDevDatabase(
       );
     }
   } else {
-    // In test harness mode, verify it's still local loopback or socket
-    if (row.srv_host !== null && row.srv_host !== '127.0.0.1' && row.srv_host !== '::1') {
+    // In test harness mode: verify target is not a protected persistent or production database
+    const dbLower = row.current_db.toLowerCase();
+    if (FORBIDDEN_TEST_DB_NAMES.includes(dbLower)) {
       throw new Error(
-        `Refusing to seed: test server reported non-local address "${row.srv_host}".`,
+        `Refusing to seed: active database "${row.current_db}" is a protected persistent or production target.`,
       );
+    }
+
+    const isAuthorizedTestDb = options.expectedDbName
+      ? row.current_db === options.expectedDbName
+      : DISPOSABLE_TEST_DB_PATTERN.test(row.current_db);
+
+    if (!isAuthorizedTestDb) {
+      throw new Error(
+        `Refusing to seed: active database "${row.current_db}" does not match disposable test database pattern.`,
+      );
+    }
+
+    const isLoopback =
+      row.srv_host === null || row.srv_host === '127.0.0.1' || row.srv_host === '::1';
+
+    if (!isLoopback) {
+      // Non-loopback addresses are refused by default unless explicit validated container test mode is active
+      if (!options.allowContainerTestDb) {
+        throw new Error(
+          `Refusing to seed: test server reported non-local address "${row.srv_host}".`,
+        );
+      }
+
+      // The marker is checked first and compared without echoing either value.
+      const marker = options.disposableMarker;
+      if (
+        !marker ||
+        !/^campusos-disposable:[0-9a-f]{32}$/.test(marker) ||
+        (row.db_comment ?? null) !== marker
+      ) {
+        throw new Error(
+          "Refusing to seed: container test database does not carry this test run's disposable-database marker.",
+        );
+      }
+
+      // Container path = ALL of: allowTestDb + allowContainerTestDb (set only by test code; seed-dev.ts never sets
+      // either), this run's disposable-database marker on the database, a harness-generated database name, a loopback TEST_DATABASE_URL whose port is the server's own
+      // port (the service container's published port), and a 172.16.0.0/12 server address. Anything else is refused.
+      // The address alone proves nothing; NODE_ENV is not consulted as proof.
+      if (!DISPOSABLE_TEST_DB_PATTERN.test(row.current_db)) {
+        throw new Error(
+          `Refusing to seed: container test database "${row.current_db}" is not a harness-generated disposable database.`,
+        );
+      }
+
+      // Validating explicit container test database configuration
+      const rawTestUrl = process.env.TEST_DATABASE_URL;
+      if (!rawTestUrl) {
+        throw new Error(
+          'Refusing to seed: container test database requires TEST_DATABASE_URL configuration.',
+        );
+      }
+
+      let testUrl: URL;
+      try {
+        testUrl = new URL(rawTestUrl);
+      } catch {
+        throw new Error('Refusing to seed: TEST_DATABASE_URL is not a valid URL.');
+      }
+
+      const allowedTestHosts = ['127.0.0.1', 'localhost', '[::1]'];
+      if (!allowedTestHosts.includes(testUrl.hostname)) {
+        throw new Error(
+          `Refusing to seed: TEST_DATABASE_URL host "${testUrl.hostname}" is not local.`,
+        );
+      }
+
+      const testPort = Number(testUrl.port || 5432);
+      if (testPort !== row.srv_port) {
+        throw new Error(
+          `Refusing to seed: server port "${row.srv_port}" conflicts with TEST_DATABASE_URL port "${testPort}".`,
+        );
+      }
+
+      if (!isPrivateContainerIp(row.srv_host)) {
+        throw new Error(
+          `Refusing to seed: test server address "${row.srv_host}" is not a recognized private container network.`,
+        );
+      }
     }
   }
 

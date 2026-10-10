@@ -7,6 +7,9 @@ import {
 } from '../../scripts/dev-seed-core.js';
 import { verifyPassword } from '../../src/modules/auth/auth.repository.js';
 
+const PW = ['pw', Math.random().toString(36).slice(2)].join('-'); // runtime-built: no secret-looking literal
+const MARKER = `campusos-disposable:${'ab'.repeat(16)}`;
+
 describe('Development seed utility (safe local admin provisioning)', () => {
   const adminUrl = inject('dbAdminUrl');
   let client: pg.Client;
@@ -85,11 +88,493 @@ describe('Development seed utility (safe local admin provisioning)', () => {
       );
     });
 
-    it('successfully probes and reports server identity when allowTestDb is true', async () => {
-      const probe = await probeLocalDevDatabase(client, { allowTestDb: true });
+    it('successfully probes and reports server identity when allowTestDb and allowContainerTestDb are enabled', async () => {
+      const probe = await probeLocalDevDatabase(client, {
+        allowTestDb: true,
+        allowContainerTestDb: true,
+        disposableMarker: inject('dbDisposableMarker'),
+      });
       expect(probe.database).toBeTruthy();
       expect(probe.user).toBeTruthy();
       expect(typeof probe.port).toBe('number');
+    });
+
+    it('refuses production or persistent database targets even when allowTestDb is true', async () => {
+      const mock = (dbName: string) => ({
+        query: () =>
+          Promise.resolve({
+            rows: [
+              {
+                current_db: dbName,
+                current_usr: 'postgres',
+                srv_port: 5432,
+                srv_host: '127.0.0.1',
+              },
+            ],
+          }),
+      });
+
+      for (const forbidden of [
+        'campusos_dev',
+        'campusos_prod',
+        'production',
+        'postgres',
+        'template1',
+      ]) {
+        await expect(
+          probeLocalDevDatabase(mock(forbidden), {
+            allowTestDb: true,
+            allowContainerTestDb: true,
+            disposableMarker: MARKER,
+          }),
+        ).rejects.toThrow(/is a protected persistent or production target/);
+      }
+    });
+
+    it('refuses non-disposable test database names when allowTestDb is true', async () => {
+      const mock = {
+        query: () =>
+          Promise.resolve({
+            rows: [
+              {
+                current_db: 'unauthorized_db',
+                current_usr: 'postgres',
+                srv_port: 5432,
+                srv_host: '127.0.0.1',
+              },
+            ],
+          }),
+      };
+
+      await expect(
+        probeLocalDevDatabase(mock, {
+          allowTestDb: true,
+          allowContainerTestDb: true,
+          disposableMarker: MARKER,
+        }),
+      ).rejects.toThrow(/does not match disposable test database pattern/);
+    });
+
+    it('refuses when NODE_ENV is production even in test harness mode', async () => {
+      const origEnv = process.env['NODE_ENV'];
+      try {
+        process.env['NODE_ENV'] = 'production';
+        const mock = {
+          query: () =>
+            Promise.resolve({
+              rows: [
+                {
+                  current_db: 'campusos_test_123456abcdef',
+                  current_usr: 'postgres',
+                  srv_port: 5432,
+                  srv_host: '127.0.0.1',
+                },
+              ],
+            }),
+        };
+        await expect(
+          probeLocalDevDatabase(mock, {
+            allowTestDb: true,
+            allowContainerTestDb: true,
+            disposableMarker: MARKER,
+          }),
+        ).rejects.toThrow(/Refusing to seed: NODE_ENV is set to "production"/);
+      } finally {
+        process.env['NODE_ENV'] = origEnv;
+      }
+    });
+
+    it('loopback test database succeeds with allowTestDb for local or socket servers', async () => {
+      const socketMock = {
+        query: () =>
+          Promise.resolve({
+            rows: [
+              {
+                current_db: 'campusos_test_abcdef012345',
+                current_usr: 'postgres',
+                srv_port: 5432,
+                srv_host: null,
+              },
+            ],
+          }),
+      };
+      const resSocket = await probeLocalDevDatabase(socketMock, { allowTestDb: true });
+      expect(resSocket.database).toBe('campusos_test_abcdef012345');
+      expect(resSocket.hostAddr).toBeNull();
+
+      const loopbackMock = {
+        query: () =>
+          Promise.resolve({
+            rows: [
+              {
+                current_db: 'campusos_test_abcdef012345',
+                current_usr: 'postgres',
+                srv_port: 5432,
+                srv_host: '127.0.0.1',
+              },
+            ],
+          }),
+      };
+      const resLoopback = await probeLocalDevDatabase(loopbackMock, { allowTestDb: true });
+      expect(resLoopback.database).toBe('campusos_test_abcdef012345');
+      expect(resLoopback.hostAddr).toBe('127.0.0.1');
+    });
+
+    it('refuses an arbitrary non-loopback address by default', async () => {
+      const containerMock = {
+        query: () =>
+          Promise.resolve({
+            rows: [
+              {
+                current_db: 'campusos_test_abcdef012345',
+                current_usr: 'postgres',
+                srv_port: 5432,
+                srv_host: '172.18.0.2',
+                db_comment: MARKER,
+              },
+            ],
+          }),
+      };
+
+      // Fails by default when allowContainerTestDb is not set
+      await expect(probeLocalDevDatabase(containerMock, { allowTestDb: true })).rejects.toThrow(
+        /test server reported non-local address "172.18.0.2"/,
+      );
+
+      // Fails when address is an arbitrary non-container IP even with allowContainerTestDb
+      const publicMock = {
+        query: () =>
+          Promise.resolve({
+            rows: [
+              {
+                current_db: 'campusos_test_abcdef012345',
+                current_usr: 'postgres',
+                srv_port: 5432,
+                srv_host: '198.51.100.1',
+                db_comment: MARKER,
+              },
+            ],
+          }),
+      };
+      const origTestDbUrl = process.env['TEST_DATABASE_URL'];
+      try {
+        process.env['TEST_DATABASE_URL'] = 'postgresql://postgres@127.0.0.1:5432/postgres';
+        await expect(
+          probeLocalDevDatabase(publicMock, {
+            allowTestDb: true,
+            allowContainerTestDb: true,
+            disposableMarker: MARKER,
+          }),
+        ).rejects.toThrow(/not a recognized private container network/);
+      } finally {
+        if (origTestDbUrl !== undefined) process.env['TEST_DATABASE_URL'] = origTestDbUrl;
+        else delete process.env['TEST_DATABASE_URL'];
+      }
+    });
+
+    it('intended CI/container database succeeds through the explicit, validated test-only path', async () => {
+      const origTestDbUrl = process.env['TEST_DATABASE_URL'];
+      try {
+        process.env['TEST_DATABASE_URL'] = 'postgresql://postgres@127.0.0.1:5432/postgres';
+        const containerMock = {
+          query: () =>
+            Promise.resolve({
+              rows: [
+                {
+                  current_db: 'campusos_test_abcdef012345',
+                  current_usr: 'postgres',
+                  srv_port: 5432,
+                  srv_host: '172.18.0.2',
+                  db_comment: MARKER,
+                },
+              ],
+            }),
+        };
+
+        const probe = await probeLocalDevDatabase(containerMock, {
+          allowTestDb: true,
+          allowContainerTestDb: true,
+          disposableMarker: MARKER,
+        });
+        expect(probe.database).toBe('campusos_test_abcdef012345');
+        expect(probe.hostAddr).toBe('172.18.0.2');
+        expect(probe.port).toBe(5432);
+      } finally {
+        if (origTestDbUrl !== undefined) process.env['TEST_DATABASE_URL'] = origTestDbUrl;
+        else delete process.env['TEST_DATABASE_URL'];
+      }
+    });
+
+    it('container path accepts only 172.16.0.0/12 and only harness-shaped database names', async () => {
+      const origTestDbUrl = process.env['TEST_DATABASE_URL'];
+      const mockOf = (db: string, host: string) => ({
+        query: () =>
+          Promise.resolve({
+            rows: [
+              {
+                current_db: db,
+                current_usr: 'postgres',
+                srv_port: 5432,
+                srv_host: host,
+                db_comment: MARKER,
+              },
+            ],
+          }),
+      });
+      const opts = {
+        allowTestDb: true,
+        allowContainerTestDb: true,
+        disposableMarker: MARKER,
+      } as const;
+      try {
+        process.env['TEST_DATABASE_URL'] = 'postgresql://postgres@127.0.0.1:5432/postgres';
+        // Other private ranges and the edges of 172.16/12 are refused.
+        for (const host of [
+          '10.0.0.5',
+          '192.168.1.20',
+          '172.15.0.2',
+          '172.32.0.2',
+          '172.18.0.256',
+        ]) {
+          await expect(
+            probeLocalDevDatabase(mockOf('campusos_test_abcdef012345', host), opts),
+            host,
+          ).rejects.toThrow(/not a recognized private container network/);
+        }
+        for (const host of ['172.16.0.2', '172.31.255.254']) {
+          const r = await probeLocalDevDatabase(mockOf('campusos_test_abcdef012345', host), opts);
+          expect(r.hostAddr).toBe(host);
+        }
+        // Names the harness never generates are refused on the container path (wrong length, prefix, case).
+        for (const db of [
+          'campusos_test_abcdef',
+          'campusos_test_ABCDEF012345',
+          'my_db',
+          'campusos_dev',
+        ]) {
+          await expect(probeLocalDevDatabase(mockOf(db, '172.18.0.2'), opts), db).rejects.toThrow(
+            /Refusing to seed/,
+          );
+        }
+        await expect(
+          probeLocalDevDatabase(mockOf('campusos_mig_abcdef0123', '172.18.0.2'), opts),
+        ).resolves.toMatchObject({ database: 'campusos_mig_abcdef0123' });
+      } finally {
+        if (origTestDbUrl !== undefined) process.env['TEST_DATABASE_URL'] = origTestDbUrl;
+        else delete process.env['TEST_DATABASE_URL'];
+      }
+    });
+
+    it('container path requires the per-run marker stamped on the database (tunnel / look-alike / conflicting config)', async () => {
+      const origTestDbUrl = process.env['TEST_DATABASE_URL'];
+      // Everything else looks perfect: harness-shaped name, 172.x address, loopback URL (e.g. a tunnel), same port.
+      const mockOf = (comment: string | null | undefined) => ({
+        query: () =>
+          Promise.resolve({
+            rows: [
+              {
+                current_db: 'campusos_test_abcdef012345',
+                current_usr: 'postgres',
+                srv_port: 5432,
+                srv_host: '172.31.5.9',
+                ...(comment === undefined ? {} : { db_comment: comment }),
+              },
+            ],
+          }),
+      });
+      const base = { allowTestDb: true, allowContainerTestDb: true } as const;
+      try {
+        process.env['TEST_DATABASE_URL'] = `postgresql://postgres:${PW}@127.0.0.1:5432/postgres`;
+        const refused = /does not carry this test run's disposable-database marker/;
+        // a persistent / pre-existing look-alike database has no comment, or someone else's comment
+        for (const comment of [
+          null,
+          undefined,
+          '',
+          'campusos-disposable:' + 'cd'.repeat(16),
+          'prod db',
+        ]) {
+          await expect(
+            probeLocalDevDatabase(mockOf(comment), { ...base, disposableMarker: MARKER }),
+          ).rejects.toThrow(refused);
+        }
+        // the caller supplies no marker, an empty one, or a malformed one: fail closed even if the comment equals it
+        for (const marker of [undefined, '', 'x', 'campusos-disposable:short']) {
+          await expect(
+            probeLocalDevDatabase(mockOf(marker ?? null), {
+              ...base,
+              ...(marker === undefined ? {} : { disposableMarker: marker }),
+            }),
+          ).rejects.toThrow(refused);
+        }
+        // the matching marker is accepted
+        await expect(
+          probeLocalDevDatabase(mockOf(MARKER), { ...base, disposableMarker: MARKER }),
+        ).resolves.toMatchObject({ hostAddr: '172.31.5.9' });
+        // neither the marker nor the URL password appears in the refusal
+        try {
+          await probeLocalDevDatabase(mockOf(null), { ...base, disposableMarker: MARKER });
+        } catch (e) {
+          const msg = (e as Error).message;
+          expect(msg).not.toContain(MARKER);
+          expect(msg).not.toContain(PW);
+        }
+      } finally {
+        if (origTestDbUrl !== undefined) process.env['TEST_DATABASE_URL'] = origTestDbUrl;
+        else delete process.env['TEST_DATABASE_URL'];
+      }
+    });
+
+    it("the harness really stamped the session database with this run's marker", async () => {
+      const r = await client.query<{ c: string | null }>(
+        `SELECT shobj_description(oid, 'pg_database') AS c FROM pg_database WHERE datname = current_database()`,
+      );
+      expect(r.rows[0]?.c).toBe(inject('dbDisposableMarker'));
+      expect(inject('dbDisposableMarker')).toMatch(/^campusos-disposable:[0-9a-f]{32}$/);
+    });
+
+    it('fails closed on missing, malformed, or conflicting container safety configuration', async () => {
+      const containerMock = {
+        query: () =>
+          Promise.resolve({
+            rows: [
+              {
+                current_db: 'campusos_test_abcdef012345',
+                current_usr: 'postgres',
+                srv_port: 5432,
+                srv_host: '172.18.0.2',
+                db_comment: MARKER,
+              },
+            ],
+          }),
+      };
+      const origTestDbUrl = process.env['TEST_DATABASE_URL'];
+
+      try {
+        // Missing TEST_DATABASE_URL
+        delete process.env['TEST_DATABASE_URL'];
+        await expect(
+          probeLocalDevDatabase(containerMock, {
+            allowTestDb: true,
+            allowContainerTestDb: true,
+            disposableMarker: MARKER,
+          }),
+        ).rejects.toThrow(/requires TEST_DATABASE_URL configuration/);
+
+        // Malformed TEST_DATABASE_URL
+        process.env['TEST_DATABASE_URL'] = 'not-a-valid-url';
+        await expect(
+          probeLocalDevDatabase(containerMock, {
+            allowTestDb: true,
+            allowContainerTestDb: true,
+            disposableMarker: MARKER,
+          }),
+        ).rejects.toThrow(/TEST_DATABASE_URL is not a valid URL/);
+
+        // Remote host in TEST_DATABASE_URL
+        process.env['TEST_DATABASE_URL'] =
+          'postgresql://postgres@db.staging.internal:5432/postgres';
+        await expect(
+          probeLocalDevDatabase(containerMock, {
+            allowTestDb: true,
+            allowContainerTestDb: true,
+            disposableMarker: MARKER,
+          }),
+        ).rejects.toThrow(/TEST_DATABASE_URL host "db.staging.internal" is not local/);
+
+        // Conflicting port in TEST_DATABASE_URL (5433 vs server 5432)
+        process.env['TEST_DATABASE_URL'] = 'postgresql://postgres@127.0.0.1:5433/postgres';
+        await expect(
+          probeLocalDevDatabase(containerMock, {
+            allowTestDb: true,
+            allowContainerTestDb: true,
+            disposableMarker: MARKER,
+          }),
+        ).rejects.toThrow(/conflicts with TEST_DATABASE_URL port "5433"/);
+      } finally {
+        if (origTestDbUrl !== undefined) process.env['TEST_DATABASE_URL'] = origTestDbUrl;
+        else delete process.env['TEST_DATABASE_URL'];
+      }
+    });
+
+    it('does not expose credentials in error messages or logs', async () => {
+      const containerMock = {
+        query: () =>
+          Promise.resolve({
+            rows: [
+              {
+                current_db: 'campusos_test_abcdef012345',
+                current_usr: 'postgres',
+                srv_port: 5432,
+                srv_host: '172.18.0.2',
+                db_comment: MARKER,
+              },
+            ],
+          }),
+      };
+      const origTestDbUrl = process.env['TEST_DATABASE_URL'];
+
+      try {
+        process.env['TEST_DATABASE_URL'] =
+          'postgresql://secret_user:super_secret_pw_123@db.remote.internal:5432/postgres'; // secret-scan:allow
+
+        let errorMsg = '';
+        try {
+          await probeLocalDevDatabase(containerMock, {
+            allowTestDb: true,
+            allowContainerTestDb: true,
+            disposableMarker: MARKER,
+          });
+        } catch (err) {
+          errorMsg = (err as Error).message;
+        }
+
+        expect(errorMsg).toBeTruthy();
+        expect(errorMsg).not.toContain('super_secret_pw_123');
+        expect(errorMsg).not.toContain('secret_user');
+      } finally {
+        if (origTestDbUrl !== undefined) process.env['TEST_DATABASE_URL'] = origTestDbUrl;
+        else delete process.env['TEST_DATABASE_URL'];
+      }
+    });
+
+    it('fails closed when database query rejects and redacts credentials, URLs, and markers', async () => {
+      const failingMock = {
+        query: () =>
+          Promise.reject(
+            new Error(
+              `query failed connecting to postgresql://admin:${PW}@db.remote.internal:5432/db with ${MARKER}`,
+            ),
+          ),
+      };
+
+      let errorMsg = '';
+      try {
+        await probeLocalDevDatabase(failingMock, {
+          allowTestDb: true,
+          allowContainerTestDb: true,
+          disposableMarker: MARKER,
+        });
+      } catch (err) {
+        errorMsg = (err as Error).message;
+      }
+
+      expect(errorMsg).toMatch(/Refusing to seed: database probe query failed/);
+      expect(errorMsg).not.toContain(PW);
+      expect(errorMsg).not.toContain(MARKER);
+      expect(errorMsg).not.toContain('postgresql://');
+    });
+
+    it('fails closed when probe query returns zero rows', async () => {
+      const emptyMock = {
+        query: () => Promise.resolve({ rows: [] }),
+      };
+
+      await expect(
+        probeLocalDevDatabase(emptyMock, {
+          allowTestDb: true,
+        }),
+      ).rejects.toThrow(/failed to probe target PostgreSQL server identity/);
     });
   });
 

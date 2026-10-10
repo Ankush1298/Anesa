@@ -18,6 +18,8 @@ declare module 'vitest' {
     dbMigratorUrl: string;
     /** Superuser URL to the server's maintenance DB, for tests that need extra databases. */
     serverAdminUrl: string;
+    /** Per-run marker stamped (COMMENT ON DATABASE) on the database this harness created; see dev-seed-core. */
+    dbDisposableMarker: string;
   }
 }
 
@@ -38,23 +40,51 @@ export default async function setup(project: TestProject): Promise<() => Promise
   // CREATE DATABASE + role/schema bootstrap under the cluster-wide lock: another test process (or project) may be
   // bootstrapping the same server at this moment.
   const adminUrl = await createBootstrappedDatabase(serverAdminUrl, dbName, pw);
-  const migratorUrl = urlFor(serverAdminUrl, 'app_migrator', pw.migrator, dbName);
-  // Disposable test database: contract migrations are authorised explicitly (every writer in this repo is
-  // already upgraded), so the tests exercise the final schema. Production paths never do this implicitly.
-  await migrate({ connectionString: migratorUrl, allowContract: contractVersions() });
-  await seedFixtures(adminUrl);
 
-  project.provide('dbUrl', adminUrl);
-  project.provide('dbAdminUrl', adminUrl);
-  project.provide('dbRuntimeUrl', urlFor(serverAdminUrl, 'app_runtime', pw.runtime, dbName));
-  project.provide('dbMigratorUrl', migratorUrl);
-  project.provide('serverAdminUrl', serverAdminUrl);
+  try {
+    // Unforgeable-by-accident proof that THIS run created this database (dev-seed container path checks it).
+    const marker = `campusos-disposable:${randomBytes(16).toString('hex')}`;
+    const stamp = new pg.Client({ connectionString: serverAdminUrl });
+    await stamp.connect();
+    try {
+      await stamp.query(`COMMENT ON DATABASE ${dbName} IS '${marker}'`);
+    } finally {
+      await stamp.end();
+    }
+    const migratorUrl = urlFor(serverAdminUrl, 'app_migrator', pw.migrator, dbName);
+    // Disposable test database: contract migrations are authorised explicitly (every writer in this repo is
+    // already upgraded), so the tests exercise the final schema. Production paths never do this implicitly.
+    await migrate({ connectionString: migratorUrl, allowContract: contractVersions() });
+    await seedFixtures(adminUrl);
 
-  return async () => {
-    const cleanup = new pg.Client({ connectionString: serverAdminUrl });
-    await cleanup.connect();
-    await cleanup.query(`DROP DATABASE IF EXISTS ${dbName} WITH (FORCE)`);
-    await cleanup.end();
-    await embedded?.stop();
-  };
+    project.provide('dbUrl', adminUrl);
+    project.provide('dbAdminUrl', adminUrl);
+    project.provide('dbRuntimeUrl', urlFor(serverAdminUrl, 'app_runtime', pw.runtime, dbName));
+    project.provide('dbMigratorUrl', migratorUrl);
+    project.provide('serverAdminUrl', serverAdminUrl);
+    project.provide('dbDisposableMarker', marker);
+
+    return async () => {
+      const cleanup = new pg.Client({ connectionString: serverAdminUrl });
+      await cleanup.connect();
+      await cleanup.query(`DROP DATABASE IF EXISTS ${dbName} WITH (FORCE)`);
+      await cleanup.end();
+      await embedded?.stop();
+    };
+  } catch (setupErr) {
+    try {
+      const cleanup = new pg.Client({ connectionString: serverAdminUrl });
+      await cleanup.connect();
+      await cleanup.query(`DROP DATABASE IF EXISTS ${dbName} WITH (FORCE)`);
+      await cleanup.end();
+    } catch (cleanupErr) {
+      // Record cleanup failure without exposing credentials
+      const cleanMsg = (cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr))
+        .replace(/postgres(?:ql)?:\/\/[^\s]+/gi, '[REDACTED_URL]')
+        .replace(/:[^:@\s]+@/g, ':[REDACTED_PASSWORD]@');
+      console.error(`Failed to clean up test database ${dbName} after setup failure: ${cleanMsg}`);
+    }
+    await embedded?.stop().catch(() => {});
+    throw setupErr;
+  }
 }
