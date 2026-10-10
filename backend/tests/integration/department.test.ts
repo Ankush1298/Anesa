@@ -16,6 +16,7 @@ import {
   CAMPUS_B1,
   CTX,
   DEPT_1,
+  DEPT_3,
   DEPT_B1,
   ORG_A,
   ORG_C,
@@ -387,6 +388,70 @@ describe('DepartmentService: scoped authorization', () => {
         expect(await status(DepartmentService.create(tx, ctx, dept())), actor.user).toBe(403);
       });
     }
+  });
+});
+
+describe('DepartmentService.getById: self-authorizing (direct calls, no route)', () => {
+  const errOf = async (p: Promise<unknown>): Promise<AppError> => {
+    try {
+      await p;
+    } catch (e) {
+      if (e instanceof AppError) return e;
+      throw e;
+    }
+    throw new Error('expected an AppError');
+  };
+
+  it('organization-scoped admin reads departments in every campus', async () => {
+    await scratch(CTX.staffA, async (tx, ctx) => {
+      expect((await DepartmentService.getById(tx, ctx, DEPT_1)).campusId).toBe(CAMPUS_1);
+      expect((await DepartmentService.getById(tx, ctx, DEPT_3)).campusId).toBe(CAMPUS_2);
+    });
+  });
+
+  it('campus admin reads a department in the own campus', async () => {
+    await scratch(CTX.campusAdminA, async (tx, ctx) => {
+      expect((await DepartmentService.getById(tx, ctx, DEPT_1)).id).toBe(DEPT_1);
+    });
+  });
+
+  it('callers without org.department.manage get 403, before any lookup', async () => {
+    for (const actor of [CTX.facultyA, CTX.hodA, CTX.studentA, CTX.noroleA]) {
+      await scratch(actor, async (tx, ctx) => {
+        expect(await status(DepartmentService.getById(tx, ctx, DEPT_1)), actor.user).toBe(403);
+        // Same answer for an unknown id: a caller without the permission cannot probe for existence.
+        expect(await status(DepartmentService.getById(tx, ctx, UNKNOWN_V7)), actor.user).toBe(403);
+      });
+    }
+  });
+
+  it('campus admin cannot read a department of another campus: 404, identical to an unknown id', async () => {
+    await scratch(CTX.campusAdminA, async (tx, ctx) => {
+      const outOfScope = await errOf(DepartmentService.getById(tx, ctx, DEPT_3));
+      const unknown = await errOf(DepartmentService.getById(tx, ctx, UNKNOWN_V7));
+      expect(outOfScope.statusCode).toBe(404);
+      expect(outOfScope.code).toBe(unknown.code);
+      expect(outOfScope.message).toBe(unknown.message);
+    });
+  });
+
+  it('cross-tenant read is 404 and indistinguishable from an unknown id', async () => {
+    await scratch(CTX.staffB, async (tx, ctx) => {
+      const foreign = await errOf(DepartmentService.getById(tx, ctx, DEPT_1));
+      const unknown = await errOf(DepartmentService.getById(tx, ctx, UNKNOWN_V7));
+      expect(foreign.statusCode).toBe(404);
+      expect(foreign.code).toBe(unknown.code);
+      expect(foreign.message).toBe(unknown.message);
+      // and the other tenant's own department is still readable by its own admin
+      expect((await DepartmentService.getById(tx, ctx, DEPT_B1)).id).toBe(DEPT_B1);
+    });
+  });
+
+  it('rejects a malformed id with 400 and an untrusted context with 500', async () => {
+    await scratch(CTX.staffA, async (tx, ctx) => {
+      expect(await status(DepartmentService.getById(tx, ctx, 'nope'))).toBe(400);
+      expect(await status(DepartmentService.getById(tx, { ...ctx }, DEPT_1))).toBe(500);
+    });
   });
 });
 

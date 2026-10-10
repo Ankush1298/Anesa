@@ -2,7 +2,6 @@ import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import type { Database } from '../../shared/database/index.js';
 import { AppError } from '../../shared/errors/http-errors.js';
 import type { AuditRequestMeta } from '../../shared/audit/index.js';
-import { AuthorizationEngine } from '../../shared/authorization/engine.js';
 import { CampusService } from './campus.service.js';
 import { DepartmentService } from './department.service.js';
 import {
@@ -169,12 +168,7 @@ export const registerOrganizationRoutes: FastifyPluginAsync<{ db: Database }> = 
       if (!ctx) throw new AppError(401, 'UNAUTHORIZED', 'Authentication required.');
 
       const record = await opts.db.withTenant(ctx, async (tx) => {
-        const dept = await DepartmentService.getById(tx, ctx, req.params.id);
-        await AuthorizationEngine.assert(tx, ctx, 'org.department.manage', {
-          organization_id: ctx.tenantId,
-          campus_id: dept.campusId,
-        });
-        return dept;
+        return DepartmentService.getById(tx, ctx, req.params.id);
       });
 
       return reply.status(200).send({ success: true, data: record });

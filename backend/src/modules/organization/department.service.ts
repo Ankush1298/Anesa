@@ -427,6 +427,8 @@ export class DepartmentService {
 
   /**
    * Reads a department by ID within the caller's tenant.
+   * Authorizes itself with org.department.manage (organization or campus scope): 403 without the permission,
+   * 404 for a missing, other-tenant or out-of-scope department (indistinguishable). Soft-deleted rows are returned.
    */
   static async getById(
     tx: TenantTx,
@@ -439,6 +441,9 @@ export class DepartmentService {
     if (!isUuidV7(departmentId)) {
       throw invalid('Invalid department ID.');
     }
+
+    // Permission held at all (403) BEFORE the lookup, so a caller without it learns nothing about existence.
+    await AuthorizationEngine.assert(tx, ctx, 'org.department.manage');
 
     const res = await tx.query<{
       id: string;
@@ -464,6 +469,12 @@ export class DepartmentService {
     if (!r) {
       throw resourceNotFound();
     }
+
+    // Scope check against the campus read from the database (never from the request); out of scope is 404.
+    await AuthorizationEngine.assert(tx, ctx, 'org.department.manage', {
+      organization_id: ctx.tenantId,
+      campus_id: r.campus_id,
+    });
 
     return {
       id: r.id,
