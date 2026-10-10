@@ -89,7 +89,7 @@ describe('migration plan: contract gate', () => {
     expect(contractVersions()).toEqual(['0009']);
     const all = loadMigrations();
     const plan = planMigrations(all, new Map());
-    expect(versions(plan.deferred)).toEqual(['0009', '0010', '0011', '0012']);
+    expect(versions(plan.deferred)).toEqual(['0009', '0010', '0011', '0012', '0013']);
     expect(versions(plan.run)).toEqual(all.slice(0, 8).map((m) => m.version));
   });
 
@@ -177,7 +177,7 @@ describe('migration plan: phase boundary', () => {
     it('ledger at 0007: the ordinary run applies 0008 and defers 0009', () => {
       const plan = planMigrations(all, upTo(7));
       expect(versions(plan.run)).toEqual(['0008']);
-      expect(versions(plan.deferred)).toEqual(['0009', '0010', '0011', '0012']);
+      expect(versions(plan.deferred)).toEqual(['0009', '0010', '0011', '0012', '0013']);
     });
 
     it('ledger at 0007: --allow-contract 0009 is REFUSED, so 0008 and 0009 are not run in one invocation', () => {
@@ -191,26 +191,27 @@ describe('migration plan: phase boundary', () => {
       }
     });
 
-    it('ledger at 0008: --allow-contract 0009 runs 0009, 0010, 0011, and 0012; without the flag it stays deferred', () => {
+    it('ledger at 0008: --allow-contract 0009 runs 0009, 0010, 0011, 0012, and 0013; without the flag it stays deferred', () => {
       expect(versions(planMigrations(all, upTo(8), ['0009']).run)).toEqual([
         '0009',
         '0010',
         '0011',
         '0012',
+        '0013',
       ]);
       const ordinary = planMigrations(all, upTo(8));
       expect(ordinary.run).toEqual([]);
-      expect(versions(ordinary.deferred)).toEqual(['0009', '0010', '0011', '0012']);
+      expect(versions(ordinary.deferred)).toEqual(['0009', '0010', '0011', '0012', '0013']);
     });
 
-    it('ledger at 0009: runs pending ordinary migrations 0010, 0011, and 0012; ledger at 0012 has nothing to run', () => {
+    it('ledger at 0009: runs pending ordinary migrations 0010, 0011, 0012, and 0013; ledger at 0013 has nothing to run', () => {
       for (const allow of [[], ['0009']]) {
         const plan = planMigrations(all, upTo(9), allow);
-        expect(versions(plan.run)).toEqual(['0010', '0011', '0012']);
+        expect(versions(plan.run)).toEqual(['0010', '0011', '0012', '0013']);
         expect(plan.deferred).toEqual([]);
       }
       for (const allow of [[], ['0009']]) {
-        const plan = planMigrations(all, upTo(12), allow);
+        const plan = planMigrations(all, upTo(13), allow);
         expect(plan.run).toEqual([]);
         expect(plan.deferred).toEqual([]);
       }
@@ -229,7 +230,7 @@ describe('migration plan: phase boundary', () => {
       const gap = upTo(7);
       gap.delete('0004');
       expect(() => planMigrations(all, gap)).toThrow(/not a contiguous prefix/);
-      expect(() => planMigrations(all, new Map([...upTo(12), ['0013', 'x']]))).toThrow(
+      expect(() => planMigrations(all, new Map([...upTo(13), ['0014', 'x']]))).toThrow(
         /missing from source control/,
       );
     });

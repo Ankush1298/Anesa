@@ -13,6 +13,7 @@ const APP_TABLES = [
   'campuses',
   'departments',
   'designations',
+  'number_sequences',
   'organization_settings',
   'organizations',
   'role_assignments',

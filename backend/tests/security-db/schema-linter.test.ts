@@ -174,6 +174,7 @@ describe('schema linter (S-2)', () => {
       'campuses',
       'departments',
       'designations',
+      'number_sequences',
       'organization_settings',
       'organizations',
       'role_assignments',
