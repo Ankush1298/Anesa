@@ -4,10 +4,16 @@ Operator runbook for rolling out `database/migrations/0008_academic_structure.sq
 `database/migrations/0009_role_scope_integrity_contract.sql` (contract).
 
 **Status of this document.** Written from the repository's migration runner (`backend/tools/db/migrate.ts`,
-`backend/tools/db/cli.ts`), the two SQL files, and `docs/architecture/v3/18-academic-structure-f21.md`. **No command or
-SQL in it has been executed against any database by the author.** Every SQL statement below was written by reading the
-schema; none has been run against a PostgreSQL server, so run them first in a non-production copy. Lock durations on
-production-sized data have **not been measured**.
+`backend/tools/db/cli.ts`), the two SQL files, and `docs/architecture/v3/18-academic-structure-f21.md`. **Nothing in it
+has been executed against production or any persistent database, and no production rollout has been performed or
+rehearsed.** The migrations and the runner (including the phase-boundary refusal described in section 8) have been
+exercised only against disposable, throw-away PostgreSQL databases created by the repository's test harness. The
+read-only SQL in sections 5 and 9 was written by reading the schema and, to the author's knowledge, has not been run on
+any server, so run it first in a non-production copy. Lock durations on production-sized data have **not been
+measured**, and no restore procedure has been exercised.
+
+Companion document: `docs/runbooks/migration-0009-recovery.md` covers what to do when a step fails or its outcome is
+uncertain. It is a design for review, **not** a procedure validated against production.
 
 Nothing here replaces an approved change window. A separate, explicit approval is required before running either
 migration against a persistent database.
@@ -24,6 +30,12 @@ migration against a persistent database.
 The runner applies migrations in file order and never runs a migration whose name ends in `_contract` unless the
 operator names its exact version with `--allow-contract`. An ordinary run applies everything before 0009, stops, and
 reports 0009 as `DEFERRED`.
+
+**Phase boundary.** On an existing database (one whose ledger is not empty) the planner also refuses to run a contract
+migration in the same invocation as any earlier pending migration. With the ledger at `0007`, `pnpm db:migrate
+--allow-contract 0009` is therefore refused before any migration SQL is sent: 0008 and 0009 are always two separate
+invocations (sections 6 and 8). This enforces the separation of invocations **only**. It does not prove that the new
+application was deployed or that the legacy writers were drained; the ledger knows neither (section 7).
 
 **Out of scope:** repairing data, creating a down migration, measuring lock times, production infrastructure (how the
 runner is packaged or executed in production is not defined in this repository).
@@ -47,6 +59,9 @@ runner is packaged or executed in production is not defined in this repository).
 0009 must wait for the drain because it is the point of no return for old writers (see section 10), and because a
 grant in flight can deadlock with the migration (the table lock order differs; see the 0009 header). The 5 second
 `lock_timeout` in 0009 is a safety net, not a substitute for the drain.
+
+The runner enforces that 0008 and 0009 are applied by separate invocations (section 1). Nothing enforces the deployment
+in step 2, the drain in step 3, or the time between them; only this procedure and its gates (section 11) do.
 
 ---
 
@@ -173,7 +188,13 @@ SELECT version, name, checksum, applied_at, applied_by
 
 Expected before 0008: versions `0001` through `0007` only. After 0008: `0001`-`0008`. After 0009: `0001`-`0009`. Anything
 else, or a version missing from source control, **stop**: the runner will also refuse (`Database has migration ... that is
-missing from source control`).
+missing from source control`). The applied versions must be a contiguous `0001..N`; a gap, for example `0009` recorded
+without `0008`, is refused too (`Migration ledger is not a contiguous prefix ...`), because the runner cannot produce it.
+Either case means something other than the runner changed the database: see the recovery guide
+(`docs/runbooks/migration-0009-recovery.md`, scenario 6).
+
+The ledger does not prove that the schema matches it: the runner never inspects the schema, so a ledger entry whose
+objects were removed by hand is accepted silently. The recovery guide has a catalog-only state check (its section 4, O2).
 
 Not verified here: the exact permissions of the account you use on the `platform` schema.
 
@@ -320,11 +341,15 @@ inventory in section 3 plus confirmation from your deployment system that old in
 ## 6. Apply 0008
 
 **Do not run this until sections 3 and 5.1-5.3 are complete.** This block is a command to run in the window; it has
-not been run by the author.
+never been run against production or any persistent database. It is for an existing database whose ledger reads exactly
+`0001`-`0007` (5.1).
 
 ```bash
 pnpm db:migrate
 ```
+
+Run it **without** `--allow-contract`. The ordinary run is how 0008 is applied on its own; it leaves 0009 `DEFERRED`.
+Naming 0009 here would not skip a step, it would be refused (section 8). The next step is section 7, not section 8.
 
 `pnpm db:migrate` resolves to `tsx --env-file-if-exists=../.env tools/db/cli.ts migrate` in `backend/` (root
 `package.json` delegates with `pnpm --filter @campusos/backend run db:migrate`).
@@ -337,8 +362,10 @@ pnpm db:migrate
 
 **Stop conditions**
 
-- The command exits non-zero. The statement fails inside the transaction, which rolls back; the ledger gets no `0008`
-  row. Capture the full error output, run the ledger query (5.1), and do not retry blindly.
+- The command exits non-zero. The failing migration's transaction rolls back and it gets no ledger row. If the run had
+  more than one pending migration, the earlier ones **stay committed** and the error does not mention them. Capture the
+  full error output, **read the ledger (5.1) before deciding anything**, and do not retry blindly. A connection error or
+  a killed command tells you nothing about the outcome (section 10).
 - `applied` contains anything other than `0008`: an unexpected migration ran. Stop and investigate.
 - Error `migrations must run as app_migrator`: wrong credentials. Stop.
 - Error about checksum drift or a migration missing from source control: stop; this is a repository/ledger mismatch.
@@ -365,7 +392,9 @@ category is non-zero; the 5.5 count is still increasing; anyone cannot attest to
 
 ## 8. Apply 0009
 
-**Do not run this until section 7 is complete and the approver has confirmed the drain.** Not executed by the author.
+**Do not run this until section 7 is complete and the approver has confirmed the drain.** Never executed against
+production or any persistent database. Read the ledger (5.1) immediately beforehand: it must show exactly
+`0001`-`0008` and no `0009` (Gate C).
 
 ```bash
 pnpm db:migrate --allow-contract 0009
@@ -377,8 +406,22 @@ pnpm db:migrate --allow-contract 0009
 non-zero exit before connecting to any database (fail-closed). The pnpm forwarding behaviour was probed in F2.4 in a
 scratch workspace; the CLI's own parsing was re-probed for F2.5 with no database environment (section 12). Both
 `--allow-contract 0009` and `--allow-contract=0009` are accepted; the version must be exactly four digits and must name an
-existing `*_contract` migration, otherwise the runner throws before running anything. There is no environment variable
+existing `*_contract` migration, otherwise the runner throws before any migration SQL is sent. There is no environment variable
 or wildcard form.
+
+**The planner enforces separate invocations; it does not prove the drain.** On an existing database a contract migration
+must be the first migration an invocation applies. If anything earlier is still pending, for example with the ledger at
+`0007` because 0008 has not been applied, the command is refused before any migration SQL is sent (the runner has only
+connected, taken its advisory lock and ensured the ledger table exists), exits non-zero and prints `Contract migration
+0009_role_scope_integrity_contract cannot run in the same invocation as pending 0008 ... Nothing was applied.` (The CLI
+prints it with a Node stack trace, as it does for other planner errors.) On disposable databases the ledger and
+schema were unchanged after such a refusal. A ledger that is not a contiguous `0001..N` is
+refused as well. An **empty** ledger (a brand-new database with nothing deployed) is the one exception and is built in
+one pass; it does not describe any database this runbook is about.
+
+What the planner cannot know: whether the application build that writes `campus_id` / `department_id` was deployed;
+whether every legacy writer was drained; how long ago 0008 was applied (two commands run seconds apart satisfy the
+planner); whether the schema matches the ledger. These remain the operator's responsibility (sections 7 and 11, Gate C).
 
 **Expected outcome**
 
@@ -389,16 +432,19 @@ or wildcard form.
 
 | Symptom                                                                              | Meaning                                                                                                                              | Action                                                                                                                                                                                          |
 | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| SQLSTATE `55P03` (`lock_not_available`)                                              | Could not take the `ACCESS EXCLUSIVE` locks in 5 s. Whole transaction rolled back; nothing recorded.                                 | Find the blocker (`pg_stat_activity`, `pg_blocking_pids`), let the approver decide how to resolve it, and re-run the command only after the drain is re-confirmed.                              |
+| SQLSTATE `55P03` (`lock_not_available`)                                              | Could not take the `ACCESS EXCLUSIVE` locks in 5 s. Whole transaction rolled back; nothing recorded.                                 | Find the blocker (`pg_stat_activity`, `pg_blocking_pids`), let the approver decide how to resolve it, and re-run the command only after the drain is re-confirmed and no `app_migrator` session or advisory lock remains (recovery guide, scenario 1).                              |
 | SQLSTATE `40P01` (deadlock)                                                          | A grant in flight deadlocked with the migration. Indicates a writer is still alive.                                                  | Rolled back. Re-do section 7; do not simply retry.                                                                                                                                              |
 | `Migration 0009 preflight failed: N inconsistent row(s) ...` (SQLSTATE class `23`)   | Data violates the target invariant. The message lists a count per category (same categories as 5.4). Nothing was changed.            | Use 5.4 to see which rows. Repair is outside this runbook (audited procedure by a DBA). Re-run 5.4 until all zero, then re-run.                                                                  |
 | `Migration 0009 post-backfill verification failed ...`                               | Rows still violate the invariant after backfill. Rolled back.                                                                        | Stop; escalate. Do not retry.                                                                                                                                                                   |
 | `Migration 0009 must leave ... ROW LEVEL SECURITY enabled and forced`                | The end-state RLS check failed. Rolled back.                                                                                         | Stop; escalate.                                                                                                                                                                                 |
+| `Contract migration 0009_... cannot run in the same invocation as pending ...`        | The ledger is behind 0008 (for example at `0007`). **Nothing was applied.** The planner refuses to combine the two phases.           | Read the ledger (5.1). Apply 0008 with the ordinary command (section 6), complete sections 7 and Gate C, then run this command. Do not look for a way around the refusal. |
+| `Migration ledger is not a contiguous prefix ...`                                    | The ledger lists a version without its predecessors, which the runner cannot produce. **Nothing was applied.**                       | Stop. Run no migration. Escalate to the database owner (recovery guide, scenario 6).                                                                                           |
 | Usage error (`usage: migrate [--allow-contract ...`)                                 | Argument not understood, for example the `--` spelling.                                                                              | Nothing ran. Fix the command.                                                                                                                                                                   |
 | `allow-contract "..." : no contract migration with that exact version`               | Wrong version.                                                                                                                       | Nothing ran. Use `0009`.                                                                                                                                                                        |
 
 Any failure **before `COMMIT`** rolls the whole file back, including the RLS changes (see section 10). Always confirm with
-the ledger query that `0009` is absent before concluding that nothing changed.
+the ledger query that `0009` is absent before concluding that nothing changed. A connection error, a killed command or a
+hang proves nothing about the outcome, and a hung command may be waiting on a lock rather than failing (section 10).
 
 ---
 
@@ -498,16 +544,28 @@ lock behaviour.
 during the file, including `55P03`, a failed preflight, or a failed verification, rolls everything back: DDL, backfills,
 the RLS `NO FORCE`/`FORCE` toggles, and the ledger row. Rollback of injected failures for 0009 is exercised by
 `tests/integration/migration-contract.test.ts` (on a disposable database). After any failure, confirm with the ledger
-query (5.1) that the version is absent. If the connection is lost mid-run, PostgreSQL aborts the open transaction; verify
-the same way. Do not assume.
+query (5.1) that the version is absent.
+
+**Do not assume the outcome of a lost connection or a killed command.** A migration file, its ledger row and `COMMIT`
+are sent as separate round-trips, so a loss before `COMMIT` was sent cannot commit; but the server backend can keep
+running the statement, and keep holding the table locks and the runner's advisory lock, until it finishes or the database
+owner ends it (observed on a disposable test server; not on production). Only a loss while `COMMIT` is in flight leaves
+the outcome genuinely uncertain, and then the ledger row on the primary is the witness (the ledger row and the DDL commit
+together). Do not start a second run until no `app_migrator` session and no advisory lock remain. A run that applies more
+than one migration commits each in its own transaction, so a failure in a later one leaves the earlier ones committed,
+and the error does not list them. After any failure, read the ledger before deciding anything. The recovery guide
+(`docs/runbooks/migration-0009-recovery.md`, scenarios 2 and 4) works through these cases; it is a design for review and
+has **not** been validated against production.
 
 **After commit.** There is **no down migration for 0008 or 0009** in this repository
 (`database/migrations/` contains forward files only). The repository provides no rollback command, and this runbook does
 not invent one.
 
 - **After 0008:** the schema change is additive and old writers keep working, so rolling the _application_ back to a
-  pre-F2 build is expected to be safe. The new tables and columns remain. Removing them would be a destructive change
-  that needs its own reviewed forward migration.
+  pre-F2 build is expected to be safe (inserts that write only `scope_id` still satisfy the kept `ra_scope_id_check`,
+  and the integration tests insert such rows into a 0008 database; no real pre-F2 build has been run against one). The
+  new tables and columns remain. Removing them is a destructive change and never an incident response: it would need its
+  own reviewed forward migration, planned outside an incident (recovery guide, section 1).
 - **After 0009:**
   - `ra_scope_id_check` is gone and `ra_scope_integrity_ck` enforces typed columns. A legacy writer that inserts a
     CAMPUS/DEPARTMENT row without the typed column now fails with SQLSTATE `23514`. Rolling the application back to
@@ -515,13 +573,18 @@ not invent one.
   - The backfill updated every CAMPUS/DEPARTMENT row that lacked its typed column, which fired `app.touch_row()`:
     **`version` was incremented and `updated_at` changed on those rows.** Any client holding an old `version` for one of
     these assignments will see a version mismatch. This cannot be undone by the repository.
-  - Reverting the constraint and guard requires a **new forward migration** (not written; it would need design and
-    review). Alternatively a **separately rehearsed recovery plan** such as a restore from backup, which discards every
-    write since that backup. Neither exists in the repository today; do not promise either to stakeholders.
+  - Dropping or relaxing `ra_scope_integrity_ck`, re-adding `ra_scope_id_check`, or weakening row level security or
+    grants is **not** an approved recovery path (recovery guide, section 1). The responses to a post-commit problem are:
+    fix the application or writer forward (a legacy writer failing with `23514` is fixed by upgrading it, not by touching
+    the constraint); a reviewed, additive or strictly strengthening forward migration where a schema defect is proven
+    (recovery guide, section 7); or a **restore from backup**, which discards every write since that backup, including
+    other tenants' data, and is a decision for the approver and the database owner. No forward migration and no restore
+    procedure exists or has been exercised in the repository; do not promise either to stakeholders.
 - Invalid data found by the preflight is never deleted, revoked or rewritten by the migration.
 
 If a problem is discovered after commit: stop further rollout, keep the evidence (ledger, section 9 outputs, logs),
-escalate to the approver, and decide between a forward fix and a restore plan. Do not improvise destructive SQL.
+escalate to the approver, and decide between a forward fix and a restore plan (recovery guide, scenario 5). Do not
+improvise destructive SQL.
 
 ---
 
@@ -541,12 +604,15 @@ Each gate is a hard stop. If a gate fails, **stop, do not continue to the next g
 
 **Gate B: after 0008**
 
-- [ ] Exit code `0`; `applied [0008]`; 0009 reported `DEFERRED`.
+- [ ] Exit code `0`; `applied [0008]`; 0009 reported `DEFERRED`; the command used did **not** include `--allow-contract`.
+- [ ] Ledger (5.1) shows exactly `0001`-`0008`.
 - [ ] Section 9.1 checks pass (including `ra_scope_id_check` still present).
 - [ ] No application error spike during the run.
 
 **Gate C: before 0009**
 
+- [ ] Ledger read immediately before the command shows exactly `0001`-`0008` and no `0009`; 0008 was applied by an
+      earlier, separate invocation (the planner refuses otherwise, but it cannot tell whether the next items are true).
 - [ ] New application build deployed and healthy.
 - [ ] Every legacy writer stopped and attested by the deployment owner (7).
 - [ ] All section 5.4 counts are `0` (as a role that bypasses RLS).
@@ -557,7 +623,8 @@ Each gate is a hard stop. If a gate fails, **stop, do not continue to the next g
 
 **Gate D: after 0009**
 
-- [ ] Command used was exactly `pnpm db:migrate --allow-contract 0009` (no `--`); exit code `0`; `applied [0009]`.
+- [ ] Command used was exactly `pnpm db:migrate --allow-contract 0009` (no `--`); exit code `0`; `applied [0009]` and
+      nothing else; ledger (5.1) shows `0001`-`0009`.
 - [ ] Section 9.2 checks pass: ledger, `ra_scope_integrity_ck` validated, no `ra_scope_id_check`, FORCE RLS on all three,
       guard flags true, `violations = 0`.
 - [ ] Application healthy; grant at CAMPUS and DEPARTMENT scope behaves correctly (9.3).
@@ -567,6 +634,14 @@ Each gate is a hard stop. If a gate fails, **stop, do not continue to the next g
 ---
 
 ## 12. Evidence and unknowns
+
+**Verified on disposable databases only (never production):** the phase-boundary refusal in section 8 is covered by unit
+tests against the real migration files and by integration tests on throw-away PostgreSQL databases: with the ledger at
+`0007`, `--allow-contract 0009` is refused with nothing applied (no migration SQL sent, ledger rows unchanged); the
+ordinary run then applies 0008, and `--allow-contract 0009` then applies 0009. In the cases tried (a truncated or
+missing ledger on a populated database, a partial ledger, a schema built by only some migrations, a lone pre-existing
+table) the result was a refusal or a rolled-back failure, and 0009 was not applied. The CLI itself was also run against
+a disposable database to observe the refusal output and exit code (1), then the ordinary run and the explicit opt-in.
 
 **Verified by the author (no database involved):** the CLI parsing behaviour in section 8 was probed by running
 `backend/tools/db/cli.ts migrate ...` with an empty environment and no `.env`. `-- --allow-contract 0009` produced the
@@ -581,3 +656,6 @@ usage error (exit 1); `--allow-contract 0009` and `--allow-contract=0009` passed
 - How the runner is packaged and invoked in production (this repository only defines the `pnpm` scripts).
 - The full set of writers of `app.role_assignments` in your deployment.
 - Any CAMPUS/DEPARTMENT role assignments in the target database (never queried).
+- Production execution of either migration, of the phase-boundary refusal, or of any recovery step: **never performed or
+  tested**. The recovery guide is a design for review, not a validated procedure.
+- Whether the time between the two invocations is adequate: the planner does not measure it.
