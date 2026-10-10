@@ -212,7 +212,14 @@ describe('role_assignments writers satisfy the typed-scope contract', () => {
     expect(campusWriters.map((f) => f.path)).toEqual([
       'src/modules/organization/campus.service.ts',
     ]);
-    expect(campusWriters[0]?.text).not.toMatch(/UPDATE\s+app\.campuses/);
+    for (const m of campusWriters[0]?.text.matchAll(
+      /UPDATE\s+app\.campuses\s+SET\s+([\s\S]*?)\s+WHERE/g,
+    ) ?? []) {
+      const setClause = m[1] ?? '';
+      for (const col of ['id', 'organization_id', 'code', 'timezone']) {
+        expect(setClause).not.toMatch(new RegExp(`\\b${col}\\s*=`, 'i'));
+      }
+    }
 
     const deptWriters = code('src').filter((f) =>
       /\b(INSERT INTO|UPDATE)\s+app\.departments\b/.test(f.text),

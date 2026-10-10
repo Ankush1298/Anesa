@@ -1,13 +1,28 @@
 import { afterAll, describe, expect, inject, it } from 'vitest';
 import { AppError } from '../../src/shared/errors/http-errors.js';
-import { CampusService, type CampusInput } from '../../src/modules/organization/campus.service.js';
+import {
+  CampusService,
+  type CampusInput,
+  type UpdateCampusInput,
+} from '../../src/modules/organization/campus.service.js';
+import { DepartmentService } from '../../src/modules/organization/department.service.js';
 import { Database } from '../../src/shared/database/index.js';
 import type { TenantTx } from '../../src/shared/database/index.js';
 import { createPool } from '../../src/shared/database/pool.js';
 import { issueTrustedContext } from '../../src/shared/tenancy/issue-trusted-context.js';
 import type { TrustedContext } from '../../src/shared/tenancy/trusted-context.js';
 import { adminQuery } from '../support/db-harness.js';
-import { CTX, ORG_C, type Ctx } from '../support/fixtures.js';
+import {
+  CAMPUS_1,
+  CAMPUS_2,
+  CAMPUS_B1,
+  CTX,
+  ORG_A,
+  ORG_C,
+  SOME_V4,
+  UNKNOWN_V7,
+  type Ctx,
+} from '../support/fixtures.js';
 
 const pool = createPool({ connectionString: inject('dbRuntimeUrl'), ssl: false, max: 2 });
 const db = new Database(pool);
@@ -178,5 +193,358 @@ describe('CampusService.create: other validation, authorization, audit', () => {
         tx.query(`UPDATE app.campuses SET ${col} = ${col} WHERE id = $1`, [id]),
       ).rejects.toMatchObject({ code: '42501' });
     });
+  });
+});
+
+describe('CampusService.getById: valid reads, scoping, isolation, and error handling', () => {
+  it('reads existing campus by ID within tenant and returns complete record shape', async () => {
+    await scratch(CTX.staffA, async (tx, ctx) => {
+      const res = await CampusService.getById(tx, ctx, CAMPUS_1);
+      expect(res).toMatchObject({
+        id: CAMPUS_1,
+        organizationId: ORG_A,
+        name: 'Campus 1',
+        code: 'C1',
+        timezone: 'Asia/Kolkata',
+        status: 'ACTIVE',
+        version: 1,
+      });
+      expect(new Date(res.createdAt).getTime()).not.toBeNaN();
+      expect(new Date(res.updatedAt).getTime()).not.toBeNaN();
+      expect(typeof res.address).toBe('object');
+    });
+  });
+
+  it('rejects invalid campus IDs with 400', async () => {
+    await scratch(CTX.staffA, async (tx, ctx) => {
+      for (const badId of ['not-a-uuid', SOME_V4, '', '12345']) {
+        expect(await status(CampusService.getById(tx, ctx, badId)), badId).toBe(400);
+      }
+    });
+  });
+
+  it('returns 404 for unknown campus ID (UUIDv7 that does not exist)', async () => {
+    await scratch(CTX.staffA, async (tx, ctx) => {
+      expect(await status(CampusService.getById(tx, ctx, UNKNOWN_V7))).toBe(404);
+    });
+  });
+
+  it('COLLEGE_ADMIN (ORG_A) can read any campus in the organization', async () => {
+    await scratch(CTX.staffA, async (tx, ctx) => {
+      const c1 = await CampusService.getById(tx, ctx, CAMPUS_1);
+      const c2 = await CampusService.getById(tx, ctx, CAMPUS_2);
+      expect(c1.id).toBe(CAMPUS_1);
+      expect(c2.id).toBe(CAMPUS_2);
+    });
+  });
+
+  it('CAMPUS_ADMIN (scoped to CAMPUS_1) can read CAMPUS_1', async () => {
+    await scratch(CTX.campusAdminA, async (tx, ctx) => {
+      const c1 = await CampusService.getById(tx, ctx, CAMPUS_1);
+      expect(c1.id).toBe(CAMPUS_1);
+    });
+  });
+
+  it('CAMPUS_ADMIN (scoped to CAMPUS_1) receives 404 when attempting to read CAMPUS_2 (scope isolation)', async () => {
+    await scratch(CTX.campusAdminA, async (tx, ctx) => {
+      expect(await status(CampusService.getById(tx, ctx, CAMPUS_2))).toBe(404);
+    });
+  });
+
+  it('tenant isolation: tenant A cannot read tenant B campus, and tenant B cannot read tenant A campus (404)', async () => {
+    await scratch(CTX.staffA, async (tx, ctx) => {
+      expect(await status(CampusService.getById(tx, ctx, CAMPUS_B1))).toBe(404);
+    });
+    await scratch(CTX.staffB, async (tx, ctx) => {
+      expect(await status(CampusService.getById(tx, ctx, CAMPUS_1))).toBe(404);
+    });
+  });
+
+  it('unprivileged roles receive 403 FORBIDDEN when attempting to read a campus', async () => {
+    for (const actor of [CTX.studentA, CTX.facultyA, CTX.hodA, CTX.noroleA]) {
+      await scratch(actor, async (tx, ctx) => {
+        expect(await status(CampusService.getById(tx, ctx, CAMPUS_1)), actor.user).toBe(403);
+      });
+    }
+  });
+});
+
+describe('CampusService.update: mutable fields, locking, conflict, no-op, and audit', () => {
+  it('updates name, address, and status for an existing campus', async () => {
+    await scratch(CTX.staffA, async (tx, ctx) => {
+      const id = await CampusService.create(
+        tx,
+        ctx,
+        campus({ code: 'UPD_BASIC', name: 'Initial Name' }),
+      );
+      const before = await CampusService.getById(tx, ctx, id);
+
+      await CampusService.update(tx, ctx, id, {
+        name: 'Updated Name',
+        address: { city: 'Bengaluru', postalCode: '560001' },
+      });
+
+      const after = await CampusService.getById(tx, ctx, id);
+      expect(after.name).toBe('Updated Name');
+      expect(after.address).toEqual({ city: 'Bengaluru', postalCode: '560001' });
+      expect(after.version).toBe(before.version + 1);
+    });
+  });
+
+  it('rejects invalid inputs with 400', async () => {
+    await scratch(CTX.staffA, async (tx, ctx) => {
+      const id = await CampusService.create(tx, ctx, campus({ code: 'UPD_VAL' }));
+
+      // Invalid campus IDs
+      expect(await status(CampusService.update(tx, ctx, 'not-a-uuid', { name: 'Valid' }))).toBe(
+        400,
+      );
+      expect(await status(CampusService.update(tx, ctx, SOME_V4, { name: 'Valid' }))).toBe(400);
+
+      // Empty or non-object input
+      expect(await status(CampusService.update(tx, ctx, id, {}))).toBe(400);
+      expect(
+        await status(CampusService.update(tx, ctx, id, null as unknown as UpdateCampusInput)),
+      ).toBe(400);
+
+      // Invalid name
+      expect(await status(CampusService.update(tx, ctx, id, { name: '' }))).toBe(400);
+      expect(await status(CampusService.update(tx, ctx, id, { name: '   ' }))).toBe(400);
+      expect(await status(CampusService.update(tx, ctx, id, { name: 'x'.repeat(256) }))).toBe(400);
+
+      // Invalid address
+      expect(
+        await status(
+          CampusService.update(tx, ctx, id, { address: [] as unknown as Record<string, unknown> }),
+        ),
+      ).toBe(400);
+      expect(
+        await status(CampusService.update(tx, ctx, id, { address: { big: 'x'.repeat(5000) } })),
+      ).toBe(400);
+
+      // Invalid status
+      expect(
+        await status(
+          CampusService.update(tx, ctx, id, { status: 'DELETED' as unknown as 'ACTIVE' }),
+        ),
+      ).toBe(400);
+      expect(
+        await status(
+          CampusService.update(tx, ctx, id, { status: 'UNKNOWN' as unknown as 'ACTIVE' }),
+        ),
+      ).toBe(400);
+    });
+  });
+
+  it('returns 404 for unknown campus ID', async () => {
+    await scratch(CTX.staffA, async (tx, ctx) => {
+      expect(await status(CampusService.update(tx, ctx, UNKNOWN_V7, { name: 'New Name' }))).toBe(
+        404,
+      );
+    });
+  });
+
+  it('COLLEGE_ADMIN (ORG_A) can update any campus in the organization', async () => {
+    await scratch(CTX.staffA, async (tx, ctx) => {
+      await CampusService.update(tx, ctx, CAMPUS_1, { name: 'Campus 1 Renamed' });
+      await CampusService.update(tx, ctx, CAMPUS_2, { name: 'Campus 2 Renamed' });
+      expect((await CampusService.getById(tx, ctx, CAMPUS_1)).name).toBe('Campus 1 Renamed');
+      expect((await CampusService.getById(tx, ctx, CAMPUS_2)).name).toBe('Campus 2 Renamed');
+    });
+  });
+
+  it('CAMPUS_ADMIN (scoped to CAMPUS_1) can update CAMPUS_1', async () => {
+    await scratch(CTX.campusAdminA, async (tx, ctx) => {
+      await CampusService.update(tx, ctx, CAMPUS_1, { name: 'Campus 1 Admin Update' });
+      expect((await CampusService.getById(tx, ctx, CAMPUS_1)).name).toBe('Campus 1 Admin Update');
+    });
+  });
+
+  it('CAMPUS_ADMIN (scoped to CAMPUS_1) receives 404 when attempting to update CAMPUS_2 (scope isolation)', async () => {
+    await scratch(CTX.campusAdminA, async (tx, ctx) => {
+      expect(await status(CampusService.update(tx, ctx, CAMPUS_2, { name: 'Should Fail' }))).toBe(
+        404,
+      );
+    });
+  });
+
+  it('tenant isolation: STAFF_A cannot update tenant B campus (404)', async () => {
+    await scratch(CTX.staffA, async (tx, ctx) => {
+      expect(await status(CampusService.update(tx, ctx, CAMPUS_B1, { name: 'Cross Tenant' }))).toBe(
+        404,
+      );
+    });
+  });
+
+  it('unprivileged roles receive 403 FORBIDDEN when attempting to update a campus', async () => {
+    for (const actor of [CTX.studentA, CTX.facultyA, CTX.hodA, CTX.noroleA]) {
+      await scratch(actor, async (tx, ctx) => {
+        expect(
+          await status(CampusService.update(tx, ctx, CAMPUS_1, { name: 'Hack' })),
+          actor.user,
+        ).toBe(403);
+      });
+    }
+  });
+
+  it('rejects deactivating a campus that has active child departments with 409 conflict', async () => {
+    await scratch(CTX.staffA, async (tx, ctx) => {
+      // CAMPUS_1 already has active DEPT_1 and DEPT_2
+      expect(await status(CampusService.update(tx, ctx, CAMPUS_1, { status: 'INACTIVE' }))).toBe(
+        409,
+      );
+    });
+  });
+
+  it('deactivation succeeds when all child departments are inactive or soft-deleted', async () => {
+    await scratch(CTX.staffA, async (tx, ctx) => {
+      const cid = await CampusService.create(
+        tx,
+        ctx,
+        campus({ code: 'DEACT_OK', name: 'To Deactivate' }),
+      );
+      const did = await DepartmentService.create(tx, ctx, {
+        campusId: cid,
+        name: 'Temporary Department',
+        code: 'TEMP_DEPT',
+      });
+
+      // While department is active, campus deactivation is rejected
+      expect(await status(CampusService.update(tx, ctx, cid, { status: 'INACTIVE' }))).toBe(409);
+
+      // Soft-delete the department
+      await DepartmentService.softDelete(tx, ctx, did);
+
+      // Now campus deactivation succeeds
+      await CampusService.update(tx, ctx, cid, { status: 'INACTIVE' });
+      const rec = await CampusService.getById(tx, ctx, cid);
+      expect(rec.status).toBe('INACTIVE');
+    });
+  });
+
+  it('no-op update with identical name, address, and status does not change version, updated_at, or write audit event', async () => {
+    await scratch(CTX.staffA, async (tx, ctx) => {
+      const cid = await CampusService.create(
+        tx,
+        ctx,
+        campus({
+          code: 'NOOP_C',
+          name: 'Noop Campus',
+          address: { city: 'Mumbai' },
+        }),
+      );
+      const before = await CampusService.getById(tx, ctx, cid);
+
+      // No-op update with identical name
+      await CampusService.update(tx, ctx, cid, { name: 'Noop Campus' });
+      const afterName = await CampusService.getById(tx, ctx, cid);
+      expect(afterName.version).toBe(before.version);
+      expect(afterName.updatedAt).toEqual(before.updatedAt);
+
+      // No-op update with identical address
+      await CampusService.update(tx, ctx, cid, { address: { city: 'Mumbai' } });
+      const afterAddr = await CampusService.getById(tx, ctx, cid);
+      expect(afterAddr.version).toBe(before.version);
+      expect(afterAddr.updatedAt).toEqual(before.updatedAt);
+
+      // No-op update with identical status
+      await CampusService.update(tx, ctx, cid, { status: 'ACTIVE' });
+      const afterStatus = await CampusService.getById(tx, ctx, cid);
+      expect(afterStatus.version).toBe(before.version);
+      expect(afterStatus.updatedAt).toEqual(before.updatedAt);
+
+      // No-op update with all identical fields
+      await CampusService.update(tx, ctx, cid, {
+        name: 'Noop Campus',
+        address: { city: 'Mumbai' },
+        status: 'ACTIVE',
+      });
+      const afterAllFields = await CampusService.getById(tx, ctx, cid);
+      expect(afterAllFields.version).toBe(before.version);
+      expect(afterAllFields.updatedAt).toEqual(before.updatedAt);
+    });
+  });
+
+  it('records audit event atomically on update and rolls back on failure', async () => {
+    const ctx = ctxOf(CTX.staffC);
+    let campusId!: string;
+
+    await db.withTenant(ctx, async (tx) => {
+      campusId = await CampusService.create(
+        tx,
+        ctx,
+        campus({ code: 'AUD_C1', name: 'Original Name' }),
+      );
+    });
+
+    try {
+      // Perform committed update with metadata
+      await db.withTenant(ctx, async (tx) => {
+        await CampusService.update(
+          tx,
+          ctx,
+          campusId,
+          { name: 'Audited Renamed Campus', address: { city: 'Delhi' }, status: 'INACTIVE' },
+          { ip: '192.168.1.100', userAgent: 'test-agent/1.0', requestId: SOME_V4 },
+        );
+      });
+
+      const auditRows = await adminQuery<{
+        action: string;
+        campus_id: string;
+        risk_tier: number;
+        ip: string;
+        user_agent: string;
+        request_id: string;
+        changes: Record<string, { old: unknown; new: unknown }>;
+      }>(
+        `SELECT action, campus_id, risk_tier, ip, user_agent, request_id, changes
+           FROM app.audit_events
+          WHERE resource_id = $1 AND action = 'campus.update'`,
+        [campusId],
+      );
+
+      expect(auditRows).toHaveLength(1);
+      expect(auditRows[0]).toMatchObject({
+        action: 'campus.update',
+        campus_id: campusId,
+        risk_tier: 1,
+        ip: '192.168.1.100',
+        user_agent: 'test-agent/1.0',
+        request_id: SOME_V4,
+      });
+      expect(auditRows[0]?.changes).toEqual({
+        name: { old: 'Original Name', new: 'Audited Renamed Campus' },
+        address: { old: {}, new: { city: 'Delhi' } },
+        status: { old: 'ACTIVE', new: 'INACTIVE' },
+      });
+
+      // Rollback atomicity test: update followed by abort
+      await db
+        .withTenant(ctx, async (tx) => {
+          await CampusService.update(tx, ctx, campusId, { name: 'Rolled Back Name' });
+          throw new Rollback();
+        })
+        .catch((e: unknown) => {
+          if (!(e instanceof Rollback)) throw e;
+        });
+
+      // Verify name was NOT changed in DB and no new audit event was added
+      const current = (
+        await adminQuery<{ name: string }>('SELECT name FROM app.campuses WHERE id = $1', [
+          campusId,
+        ])
+      )[0];
+      expect(current?.name).toBe('Audited Renamed Campus');
+
+      const auditCountAfterRollback = await adminQuery<{ count: string }>(
+        `SELECT count(*) FROM app.audit_events WHERE resource_id = $1 AND action = 'campus.update'`,
+        [campusId],
+      );
+      expect(auditCountAfterRollback[0]?.count).toBe('1');
+    } finally {
+      // Clean up Tenant C campus write (audit events are append-only)
+      await adminQuery('DELETE FROM app.campuses WHERE id = $1', [campusId]);
+    }
   });
 });

@@ -10,6 +10,7 @@ import { registerAuthRoutes } from './modules/auth/auth.routes.js';
 import { LoginRateLimiter } from './modules/auth/login-limiter.js';
 import { AuthService } from './modules/auth/auth.service.js';
 import { AuthRepository } from './modules/auth/auth.repository.js';
+import { registerOrganizationRoutes } from './modules/organization/organization.routes.js';
 import type { Database } from './shared/database/index.js';
 import { PERMISSION_CODES } from './shared/authorization/catalog.js';
 
@@ -38,6 +39,11 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     requestIdHeader: false,
     trustProxy: config.trustProxy,
     bodyLimit: 1_048_576,
+    ajv: {
+      customOptions: {
+        removeAdditional: false,
+      },
+    },
   });
 
   // Route coverage (06 §2 step 5, 10 §4.1): every route is either on the explicit public allowlist
@@ -67,6 +73,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
     authService,
     loginLimiter: deps.loginLimiter ?? new LoginRateLimiter(),
   });
+  app.register(registerOrganizationRoutes, { prefix: '/api/v1/organization', db: deps.db });
 
   return app;
 }
