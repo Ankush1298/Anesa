@@ -61,6 +61,7 @@ describe('GET /auth/me profile', () => {
     expect(b.display_name).toBe('User A');
     expect(b.roles).toEqual(['STUDENT']);
     expect(b.capabilities).toEqual([
+      'academic.program.read',
       'org.structure.read',
       'session.read',
       'session.revoke',
@@ -89,6 +90,7 @@ describe('GET /auth/me profile', () => {
     }>();
     expect(b.roles).toEqual(['HOD']);
     expect(b.capabilities).toEqual([
+      'academic.program.read',
       'org.structure.read',
       'session.read',
       'session.revoke',

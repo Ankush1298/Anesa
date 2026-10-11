@@ -36,6 +36,10 @@ export const PERMISSION_CATALOG: readonly PermissionDef[] = [
   { code: 'org.settings.read', sensitivity: 'NORMAL' },
   { code: 'org.settings.manage', sensitivity: 'CRITICAL' },
 
+  { code: 'academic.program.read', sensitivity: 'NORMAL' },
+  { code: 'academic.program.manage', sensitivity: 'SENSITIVE' },
+  { code: 'academic.cohort.manage', sensitivity: 'SENSITIVE' },
+
   { code: 'role.assignment.grant', sensitivity: 'CRITICAL' },
   { code: 'role.assignment.revoke', sensitivity: 'CRITICAL' },
 ];

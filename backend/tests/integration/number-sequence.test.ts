@@ -224,8 +224,8 @@ describe('NumberSequenceEngine Integration', () => {
       };
 
       await db.withTenant(ctx, async (tx) => {
-        // @ts-expect-error testing untrusted context runtime guard
         await expect(
+          // @ts-expect-error testing untrusted context runtime guard
           NumberSequenceService.next(tx, unbranded, { key: 'foo', period: '2026' }),
         ).rejects.toMatchObject({
           statusCode: 500,

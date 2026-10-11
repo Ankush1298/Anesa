@@ -86,7 +86,7 @@ describe('contract gate against a real database', () => {
     const db = await freshDatabase();
     const first = await migrate({ connectionString: db.migrator });
     expect(first.applied).toEqual(APPLIED_BY_DEFAULT);
-    expect(first.deferred).toEqual(['0009', '0010', '0011', '0012', '0013']);
+    expect(first.deferred).toEqual(['0009', '0010', '0011', '0012', '0013', '0014']);
     expect(first.blockedBy).toBe('0009');
     expect(await ledgerOf(db)).toEqual(APPLIED_BY_DEFAULT);
     const names = await constraintNames(db);
@@ -95,11 +95,11 @@ describe('contract gate against a real database', () => {
 
     const second = await migrate({ connectionString: db.migrator });
     expect(second.applied).toEqual([]);
-    expect(second.deferred).toEqual(['0009', '0010', '0011', '0012', '0013']);
+    expect(second.deferred).toEqual(['0009', '0010', '0011', '0012', '0013', '0014']);
     expect(await ledgerOf(db)).toEqual(APPLIED_BY_DEFAULT);
 
     const third = await migrate({ connectionString: db.migrator, allowContract: ['0009'] });
-    expect(third.applied).toEqual(['0009', '0010', '0011', '0012', '0013']);
+    expect(third.applied).toEqual(['0009', '0010', '0011', '0012', '0013', '0014']);
     expect(third.deferred).toEqual([]);
     expect(await constraintNames(db)).toContain('ra_scope_integrity_ck');
   });
@@ -143,9 +143,9 @@ describe('contract gate against a real database', () => {
     // The documented order still works: ordinary run (0008 only, 0009 deferred), then the explicit opt-in (0009 only).
     const step1 = await migrate({ connectionString: db.migrator });
     expect(step1.applied).toEqual(['0008']);
-    expect(step1.deferred).toEqual(['0009', '0010', '0011', '0012', '0013']);
+    expect(step1.deferred).toEqual(['0009', '0010', '0011', '0012', '0013', '0014']);
     const step2 = await migrate({ connectionString: db.migrator, allowContract: ['0009'] });
-    expect(step2.applied).toEqual(['0009', '0010', '0011', '0012', '0013']);
+    expect(step2.applied).toEqual(['0009', '0010', '0011', '0012', '0013', '0014']);
     expect(await ledgerOf(db)).toEqual([
       ...APPLIED_BY_DEFAULT,
       '0009',
@@ -153,6 +153,7 @@ describe('contract gate against a real database', () => {
       '0011',
       '0012',
       '0013',
+      '0014',
     ]);
     expect(await constraintNames(db)).toContain('ra_scope_integrity_ck');
   });
@@ -268,7 +269,7 @@ describe('migration 0009 on legacy data', () => {
     );
 
     const result = await migrate({ connectionString: db.migrator, allowContract: ['0009'] });
-    expect(result.applied).toEqual(['0009', '0010', '0011', '0012', '0013']);
+    expect(result.applied).toEqual(['0009', '0010', '0011', '0012', '0013', '0014']);
 
     const rows = await sql<{
       scope_type: string;
@@ -311,6 +312,7 @@ describe('migration 0009 on legacy data', () => {
       '0011',
       '0012',
       '0013',
+      '0014',
     ]);
   });
 
@@ -416,7 +418,7 @@ describe('migration 0009: lock_timeout', () => {
     expect(await ledgerOf(db)).toEqual(APPLIED_BY_DEFAULT);
 
     const retry = await migrate({ connectionString: db.migrator, allowContract: ['0009'] });
-    expect(retry.applied).toEqual(['0009', '0010', '0011', '0012', '0013']); // nothing was left behind by the timed-out attempt
+    expect(retry.applied).toEqual(['0009', '0010', '0011', '0012', '0013', '0014']); // nothing was left behind by the timed-out attempt
   });
 });
 
@@ -537,7 +539,7 @@ $inj$;
 
     // and the migration is still fully applicable afterwards (the real file, no injection)
     const retry = await migrate({ connectionString: db.migrator, allowContract: ['0009'] });
-    expect(retry.applied).toEqual(['0009', '0010', '0011', '0012', '0013']);
+    expect(retry.applied).toEqual(['0009', '0010', '0011', '0012', '0013', '0014']);
   });
 });
 
@@ -619,7 +621,15 @@ describe('empty-ledger exemption: only a genuinely fresh database can be built i
     const db = await freshDatabase();
     // the legitimate use of the exemption: a brand-new database in one pass
     const built = await migrate({ connectionString: db.migrator, allowContract: ['0009'] });
-    expect(built.applied).toEqual([...APPLIED_BY_DEFAULT, '0009', '0010', '0011', '0012', '0013']);
+    expect(built.applied).toEqual([
+      ...APPLIED_BY_DEFAULT,
+      '0009',
+      '0010',
+      '0011',
+      '0012',
+      '0013',
+      '0014',
+    ]);
     const rows = await ledgerRows(db);
     const baseline = await objects(db);
     const restoreLedger = async (upTo: number): Promise<void> => {
