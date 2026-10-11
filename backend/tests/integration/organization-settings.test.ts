@@ -336,7 +336,7 @@ describe('SettingsService.set: validation', () => {
 
   it('values outside the key schema are 400, the message never echoes the submitted value, and nothing is stored', async () => {
     const marker = 'SUBMITTED-MARKER-9137';
-    await scratch(CTX.staffA, async (tx, ctx) => {
+    await scratch(CTX.staffC, async (tx, ctx) => {
       const attempts: [string, unknown][] = [
         [AGE, -1],
         [AGE, 151],
@@ -364,7 +364,7 @@ describe('SettingsService.set: validation', () => {
       }
       const rows = await tx.query(
         'SELECT 1 FROM app.organization_settings WHERE organization_id = $1 AND key = ANY($2::text[])',
-        [ORG_A, [DOB, NOTIFY, 'guardian.academic_visibility']],
+        [ORG_C, [AGE, DOB, NOTIFY, 'guardian.academic_visibility']],
       );
       expect(rows.rows).toHaveLength(0);
     });
