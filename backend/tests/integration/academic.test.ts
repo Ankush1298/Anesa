@@ -15,7 +15,7 @@ import { createPool } from '../../src/shared/database/pool.js';
 import { issueTrustedContext } from '../../src/shared/tenancy/issue-trusted-context.js';
 import type { TrustedContext } from '../../src/shared/tenancy/trusted-context.js';
 import { adminQuery } from '../support/db-harness.js';
-import { CTX, DEPT_1, DEPT_3, type Ctx } from '../support/fixtures.js';
+import { CTX, DEPT_1, DEPT_2, DEPT_3, ORG_A, type Ctx } from '../support/fixtures.js';
 
 const pool = createPool({ connectionString: inject('dbRuntimeUrl'), ssl: false, max: 2 });
 const db = new Database(pool);
@@ -463,14 +463,37 @@ describe('CohortService', () => {
     });
   });
 
-  it('lists cohorts scoped through the program department', async () => {
+  it('lists cohorts scoped through the program department: EVERY returned cohort belongs to the HOD department', async () => {
     await scratch(CTX.staffA, async (tx, ctx) => {
+      // One cohort in the HOD's department, one in a sibling department of the SAME campus, one in another campus.
       const prog1 = await seedProgram(tx, ctx, DEPT_1);
+      const prog2 = await seedProgram(tx, ctx, DEPT_2);
       const prog3 = await seedProgram(tx, ctx, DEPT_3);
-      await CohortService.create(tx, ctx, cohortBody({ programId: prog1, admissionYear: 2025 }));
-      await CohortService.create(tx, ctx, cohortBody({ programId: prog3, admissionYear: 2025 }));
+      for (const programId of [prog1, prog2, prog3]) {
+        await CohortService.create(tx, ctx, cohortBody({ programId, admissionYear: 2025 }));
+      }
+
       const hod = await CohortService.list(tx, ctxOf(CTX.hodA));
-      expect(hod.every((c) => c.programId === prog1)).toBe(true);
+
+      // Not vacuous: this test's own DEPT_1 cohort is visible.
+      expect(hod.some((c) => c.programId === prog1)).toBe(true);
+
+      // The property under test, independent of any other test file's committed rows (which may legitimately add
+      // DEPT_1 cohorts, and must never add anything else): resolve the department of EVERY returned cohort.
+      const programIds = [...new Set(hod.map((c) => c.programId))];
+      const owners = await tx.query<{ id: string; department_id: string }>(
+        'SELECT id, department_id FROM app.programs WHERE organization_id = $1 AND id = ANY($2::uuid[])',
+        [ORG_A, programIds],
+      );
+      expect(owners.rows, 'every returned cohort must resolve to a program').toHaveLength(
+        programIds.length,
+      );
+      const outOfScope = owners.rows.filter((r) => r.department_id !== DEPT_1);
+      expect(outOfScope, 'cohorts returned from a department other than DEPT_1').toEqual([]);
+
+      // Readable failure messages for the two seeded decoys.
+      expect(hod.some((c) => c.programId === prog2)).toBe(false);
+      expect(hod.some((c) => c.programId === prog3)).toBe(false);
     });
   });
 
