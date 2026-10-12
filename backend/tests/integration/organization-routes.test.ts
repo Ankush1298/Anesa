@@ -790,12 +790,23 @@ describe('Organization HTTP API', () => {
       expect(res1.statusCode).toBe(201);
       expect(typeof res1.json<{ data: { id: string } }>().data.id).toBe('string');
 
-      const countBefore = (
-        await adminQuery<{ c: string }>(
-          `SELECT COUNT(*)::text AS c FROM app.audit_events WHERE organization_id = $1`,
-          [ORG_A],
-        )
-      )[0]!.c;
+      // Scoped to THIS operation's unique campus code (not a tenant-wide count): other suites write ORG_A
+      // audit events concurrently, and only rows about this code can be caused by this test.
+      const campusAudits = () =>
+        adminQuery<{ action: string; resource_id: string }>(
+          `SELECT action, resource_id FROM app.audit_events
+            WHERE organization_id = $1 AND resource_type = 'campus' AND changes->'code'->>'new' = $2`,
+          [ORG_A, code],
+        );
+      const campusRows = () =>
+        adminQuery<{ id: string }>(
+          `SELECT id FROM app.campuses WHERE organization_id = $1 AND code = $2`,
+          [ORG_A, code],
+        );
+      const createdId = res1.json<{ data: { id: string } }>().data.id;
+      const auditsBefore = await campusAudits();
+      expect(auditsBefore).toEqual([{ action: 'campus.create', resource_id: createdId }]);
+      expect((await campusRows()).map((r) => r.id)).toEqual([createdId]);
 
       // 2. Duplicate create fails with 409 CONFLICT
       const res2 = await post('orgAdminA', '/api/v1/organization/campuses', {
@@ -805,14 +816,9 @@ describe('Organization HTTP API', () => {
       });
       expect(res2.statusCode).toBe(409);
 
-      // Audit count remains unchanged because transaction rolled back completely
-      const countAfter = (
-        await adminQuery<{ c: string }>(
-          `SELECT COUNT(*)::text AS c FROM app.audit_events WHERE organization_id = $1`,
-          [ORG_A],
-        )
-      )[0]!.c;
-      expect(countAfter).toBe(countBefore);
+      // The rolled-back duplicate left no campus row and no orphaned campus audit event for this code.
+      expect(await campusAudits()).toEqual(auditsBefore);
+      expect((await campusRows()).map((r) => r.id)).toEqual([createdId]);
     });
 
     it('read endpoints do NOT write audit events', async () => {

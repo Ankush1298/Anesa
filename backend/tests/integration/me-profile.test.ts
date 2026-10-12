@@ -91,6 +91,7 @@ describe('GET /auth/me profile', () => {
     expect(b.roles).toEqual(['HOD']);
     expect(b.capabilities).toEqual([
       'academic.program.read',
+      'employee.profile.read',
       'org.structure.read',
       'session.read',
       'session.revoke',

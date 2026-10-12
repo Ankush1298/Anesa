@@ -14,6 +14,7 @@ const APP_TABLES = [
   'cohorts',
   'departments',
   'designations',
+  'employees',
   'number_sequences',
   'organization_settings',
   'organizations',

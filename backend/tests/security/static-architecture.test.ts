@@ -165,29 +165,86 @@ describe('authorization architecture guardrails (Slice 3)', () => {
     expect(offenders.map((f) => f.path)).toEqual([]);
   });
 
+  // Role names as quoted strings. Used by the ad hoc role-check guard below and by the exemption test after it.
+  const roleNames =
+    /['"`](STUDENT|FACULTY|STAFF|HOD|DEPARTMENT_ADMIN|CAMPUS_ADMIN|COLLEGE_ADMIN|REGISTRAR|admin|ADMIN|superuser)['"`]/;
+  const adhoc = /\.role\b|\.roles\b|\brole\s*(?:===|!==|==|!=)|actorKind\s*(?:===|!==|==|!=)/;
+
+  // The employee_type vocabulary (doc 02 §4.4: FACULTY|STAFF|ADMIN|VISITING) is DATA that happens to share
+  // spellings with role names. It is exempt only as ONE declaration, in ONE file, with EXACTLY these four values in
+  // this order: the same text anywhere else, or any other value in the list, stays guarded.
+  const EMPLOYEE_TYPES_FILE = 'src/modules/people/employee.schemas.ts';
+  const EMPLOYEE_TYPES_DECLARATION =
+    /export const EMPLOYEE_TYPES = \[\s*'FACULTY',\s*'STAFF',\s*'ADMIN',\s*'VISITING',?\s*\] as const;/g;
+
+  // Disambiguate designation category ('ADMIN') from role name 'ADMIN' (any file), and apply the narrow
+  // employee_type exemption above (that one file only).
+  const stripExemptVocabulary = (path: string, s: string): string => {
+    const stripped = s
+      .replace(/Type\.Literal\(['"`]ADMIN['"`]\)/g, '')
+      .replace(/category\s*!==\s*['"`]ADMIN['"`]/g, '');
+    return path === EMPLOYEE_TYPES_FILE
+      ? stripped.replace(EMPLOYEE_TYPES_DECLARATION, '')
+      : stripped;
+  };
+
   it('routes and hooks contain no ad hoc role checks (no role names, no actorKind/role comparisons)', () => {
-    const roleNames =
-      /['"`](STUDENT|FACULTY|STAFF|HOD|DEPARTMENT_ADMIN|CAMPUS_ADMIN|COLLEGE_ADMIN|REGISTRAR|admin|ADMIN|superuser)['"`]/;
-    const adhoc = /\.role\b|\.roles\b|\brole\s*(?:===|!==|==|!=)|actorKind\s*(?:===|!==|==|!=)/;
-    // Disambiguate designation category ('ADMIN') from role name 'ADMIN'
-    const stripDesignationCategory = (s: string) =>
-      s
-        .replace(/Type\.Literal\(['"`]ADMIN['"`]\)/g, '')
-        .replace(/category\s*!==\s*['"`]ADMIN['"`]/g, '');
     const offenders = modules.filter(
       (f) =>
         !f.path.endsWith('auth.service.ts') &&
-        (roleNames.test(stripDesignationCategory(f.text)) || adhoc.test(f.text)),
+        (roleNames.test(stripExemptVocabulary(f.path, f.text)) || adhoc.test(f.text)),
     );
     expect(offenders.map((f) => f.path)).toEqual([]);
     // role names appear in code only in the role matrix and the DB-facing authorization layer
     const outside = code.filter(
       (f) =>
         !inAuthz(f.path) &&
-        roleNames.test(stripDesignationCategory(f.text)) &&
+        roleNames.test(stripExemptVocabulary(f.path, f.text)) &&
         !/\bSTUDENT\b|\bSTAFF\b/.test(f.text.replace(roleNames, '')),
     );
     expect(outside.map((f) => f.path)).toEqual([]);
+  });
+
+  it('the employee_type exemption is bound to its file AND its exact values (it cannot be borrowed)', () => {
+    const decl =
+      "export const EMPLOYEE_TYPES = ['FACULTY', 'STAFF', 'ADMIN', 'VISITING'] as const;";
+    const guarded = (path: string, text: string): boolean =>
+      roleNames.test(stripExemptVocabulary(path, text));
+
+    // the intended declaration in the intended file is exempt...
+    expect(guarded(EMPLOYEE_TYPES_FILE, decl)).toBe(false);
+    // ...including when a formatter wraps it across lines
+    expect(
+      guarded(
+        EMPLOYEE_TYPES_FILE,
+        "export const EMPLOYEE_TYPES = [\n  'FACULTY',\n  'STAFF',\n  'ADMIN',\n  'VISITING',\n] as const;",
+      ),
+    ).toBe(false);
+
+    // the identical text in any other file is still caught (no same-named-constant bypass)
+    for (const other of [
+      'src/modules/people/employee.routes.ts',
+      'src/modules/academics/academic.schemas.ts',
+      'src/modules/auth/auth.hook.ts',
+      'src/shared/anything.ts',
+    ]) {
+      expect(guarded(other, decl), other).toBe(true);
+    }
+
+    // in the intended file, any change to the values is caught
+    expect(guarded(EMPLOYEE_TYPES_FILE, decl.replace("'VISITING'", "'COLLEGE_ADMIN'"))).toBe(true);
+    expect(
+      guarded(EMPLOYEE_TYPES_FILE, decl.replace("'VISITING'", "'VISITING', 'REGISTRAR'")),
+    ).toBe(true);
+    expect(guarded(EMPLOYEE_TYPES_FILE, decl.replace("'STAFF', ", ''))).toBe(true); // a value removed
+    // only the declaration is exempt, not the rest of the file
+    expect(guarded(EMPLOYEE_TYPES_FILE, `${decl}\nconst who = 'HOD';`)).toBe(true);
+
+    // and the real file is exempt through this same function (the exemption is not dead code)
+    const real = code.find((f) => f.path === EMPLOYEE_TYPES_FILE);
+    expect(real, EMPLOYEE_TYPES_FILE).toBeDefined();
+    expect(guarded(real!.path, real!.text)).toBe(false);
+    expect(real!.text).toContain('export const EMPLOYEE_TYPES = '); // the declaration is present
   });
 
   it('request data (body/query/params/headers) never supplies tenant, identity, role, permission or scope', () => {

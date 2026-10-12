@@ -175,6 +175,7 @@ describe('schema linter (S-2)', () => {
       'cohorts',
       'departments',
       'designations',
+      'employees',
       'number_sequences',
       'organization_settings',
       'organizations',
