@@ -217,14 +217,16 @@ describe('Student isolation (same tenant) — Invariant B', () => {
         [target, STUDENT_A],
       );
       expect(remap.error?.code, `remap to ${target}`).toBe('42501');
-      expect(remap.error?.message).toMatch(/row-level security/);
+      // 0017 revoked UPDATE (user_id) from the runtime role: the refusal is now a column privilege, which is checked
+      // before row-level security. (Before 0017 it was the students_student_self WITH CHECK.)
+      expect(remap.error?.message).toMatch(/permission denied/);
     }
   });
 
   it('a student can never create students or accounts (INSERT is restricted to staff actors)', async () => {
     const stu = await runAs(
       CTX.studentA,
-      "INSERT INTO app.students (id, organization_id, user_id, admission_number) VALUES ('01939a00-0000-7000-8000-00000000d201', $1, $2, 'SELF-1')",
+      "INSERT INTO app.students (id, organization_id, user_id, admission_number, admission_date) VALUES ('01939a00-0000-7000-8000-00000000d201', $1, $2, 'SELF-1', '2024-07-01')",
       [ORG_A, USER_A],
     );
     expect(stu.error?.code).toBe('42501');

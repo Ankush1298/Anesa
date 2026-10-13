@@ -97,6 +97,8 @@ describe('migration plan: contract gate', () => {
       '0013',
       '0014',
       '0015',
+      '0016',
+      '0017',
     ]);
     expect(versions(plan.run)).toEqual(all.slice(0, 8).map((m) => m.version));
   });
@@ -193,6 +195,8 @@ describe('migration plan: phase boundary', () => {
         '0013',
         '0014',
         '0015',
+        '0016',
+        '0017',
       ]);
     });
 
@@ -207,7 +211,7 @@ describe('migration plan: phase boundary', () => {
       }
     });
 
-    it('ledger at 0008: --allow-contract 0009 runs 0009 through 0015; without the flag it stays deferred', () => {
+    it('ledger at 0008: --allow-contract 0009 runs 0009 through 0017; without the flag it stays deferred', () => {
       expect(versions(planMigrations(all, upTo(8), ['0009']).run)).toEqual([
         '0009',
         '0010',
@@ -216,6 +220,8 @@ describe('migration plan: phase boundary', () => {
         '0013',
         '0014',
         '0015',
+        '0016',
+        '0017',
       ]);
       const ordinary = planMigrations(all, upTo(8));
       expect(ordinary.run).toEqual([]);
@@ -227,17 +233,28 @@ describe('migration plan: phase boundary', () => {
         '0013',
         '0014',
         '0015',
+        '0016',
+        '0017',
       ]);
     });
 
-    it('ledger at 0009: runs pending ordinary migrations 0010 through 0015; ledger at 0015 has nothing to run', () => {
+    it('ledger at 0009: runs pending ordinary migrations 0010 through 0017; ledger at 0017 has nothing to run', () => {
       for (const allow of [[], ['0009']]) {
         const plan = planMigrations(all, upTo(9), allow);
-        expect(versions(plan.run)).toEqual(['0010', '0011', '0012', '0013', '0014', '0015']);
+        expect(versions(plan.run)).toEqual([
+          '0010',
+          '0011',
+          '0012',
+          '0013',
+          '0014',
+          '0015',
+          '0016',
+          '0017',
+        ]);
         expect(plan.deferred).toEqual([]);
       }
       for (const allow of [[], ['0009']]) {
-        const plan = planMigrations(all, upTo(15), allow);
+        const plan = planMigrations(all, upTo(17), allow);
         expect(plan.run).toEqual([]);
         expect(plan.deferred).toEqual([]);
       }
@@ -256,7 +273,7 @@ describe('migration plan: phase boundary', () => {
       const gap = upTo(7);
       gap.delete('0004');
       expect(() => planMigrations(all, gap)).toThrow(/not a contiguous prefix/);
-      expect(() => planMigrations(all, new Map([...upTo(15), ['0016', 'x']]))).toThrow(
+      expect(() => planMigrations(all, new Map([...upTo(17), ['0018', 'x']]))).toThrow(
         /missing from source control/,
       );
     });

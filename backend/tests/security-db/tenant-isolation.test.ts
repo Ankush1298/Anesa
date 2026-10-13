@@ -210,7 +210,7 @@ describe('Tenant isolation — writes', () => {
         [ORG_B, STUDENT_C],
       ],
       [
-        "INSERT INTO app.students (id, organization_id, user_id, admission_number) VALUES ('01939a00-0000-7000-8000-00000000d002', $1, $2, 'FORGED-1')",
+        "INSERT INTO app.students (id, organization_id, user_id, admission_number, admission_date) VALUES ('01939a00-0000-7000-8000-00000000d002', $1, $2, 'FORGED-1', '2024-07-01')",
         [ORG_B, STAFF_B],
       ],
       [

@@ -158,8 +158,10 @@ describe('contract gate: no code path authorises a contract migration implicitly
   it('tests authorise contract migrations only on disposable databases (global setup and migration tests)', () => {
     const tests = code('tests').filter((f) => /allowContract|contractVersions/.test(f.text));
     expect(tests.map((f) => f.path).sort()).toEqual([
+      'tests/integration/migration-0017.test.ts',
       'tests/integration/migration-contract.test.ts',
       'tests/integration/migrations.test.ts',
+      'tests/integration/person-record-exclusivity.test.ts',
       'tests/security/academic-structure-static.test.ts',
       'tests/support/global-db.ts',
       'tests/unit/migrate-plan.test.ts',

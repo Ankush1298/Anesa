@@ -164,6 +164,11 @@ export class EmployeeService {
       );
     } catch (err) {
       const e = err as { code?: string; constraint?: string };
+      // Race loser of the database guard (migration 0016): a student record for this account committed after the
+      // check above. Only this exact code AND constraint is mapped; any other 23P01 stays an unexpected error.
+      if (e.code === '23P01' && e.constraint === 'person_record_exclusive') {
+        throw new AppError(409, 'CONFLICT', 'This account already has a student record.');
+      }
       if (e.code === '23505') {
         throw new AppError(
           409,

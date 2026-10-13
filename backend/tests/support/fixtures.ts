@@ -94,7 +94,19 @@ export const UNKNOWN_V7 = '01939a00-0000-7000-8000-00000000ffff';
 /** A random-looking UUIDv4: syntactically a UUID, but not a valid identifier for this system. */
 export const SOME_V4 = '3b241101-e2bb-4255-8caf-4136c566a962';
 
-export async function seedFixtures(adminUrl: string): Promise<void> {
+export interface SeedFixturesOptions {
+  /**
+   * Seed the students in the shape that existed BEFORE migration 0017 (no admission_date column). Only for tests that
+   * deliberately build a database at an older schema and need rows written under it (tests/integration/
+   * migration-contract.test.ts, legacyDatabase). Every other caller seeds a fully migrated database and must leave this off.
+   */
+  legacyStudentShape?: boolean;
+}
+
+export async function seedFixtures(
+  adminUrl: string,
+  options: SeedFixturesOptions = {},
+): Promise<void> {
   // Seeded as the superuser, which bypasses RLS: this is the test harness acting as the platform.
   const c = new pg.Client({ connectionString: adminUrl });
   await c.connect();
@@ -125,13 +137,24 @@ export async function seedFixtures(adminUrl: string): Promise<void> {
          ($5, $7, 'staff.b@college-b.test', 'Staff B', 'ACTIVE', $5)`,
       [USER_A, USER_A2, STAFF_A, USER_B, STAFF_B, ORG_A, ORG_B],
     );
-    await c.query(
-      `INSERT INTO app.students (id, organization_id, user_id, admission_number, status) VALUES
-         ($1, $4, $5, 'A-0001', 'ACTIVE'),
-         ($2, $4, $6, 'A-0002', 'ACTIVE'),
-         ($3, $7, $8, 'B-0001', 'ACTIVE')`,
-      [STUDENT_A, STUDENT_B, STUDENT_C, ORG_A, USER_A, USER_A2, ORG_B, USER_B],
-    );
+    const studentParams = [STUDENT_A, STUDENT_B, STUDENT_C, ORG_A, USER_A, USER_A2, ORG_B, USER_B];
+    if (options.legacyStudentShape) {
+      await c.query(
+        `INSERT INTO app.students (id, organization_id, user_id, admission_number, status) VALUES
+           ($1, $4, $5, 'A-0001', 'ACTIVE'),
+           ($2, $4, $6, 'A-0002', 'ACTIVE'),
+           ($3, $7, $8, 'B-0001', 'ACTIVE')`,
+        studentParams,
+      );
+    } else {
+      await c.query(
+        `INSERT INTO app.students (id, organization_id, user_id, admission_number, admission_date, status) VALUES
+           ($1, $4, $5, 'A-0001', '2024-07-01', 'ACTIVE'),
+           ($2, $4, $6, 'A-0002', '2024-07-01', 'ACTIVE'),
+           ($3, $7, $8, 'B-0001', '2024-07-01', 'ACTIVE')`,
+        studentParams,
+      );
+    }
     await c.query(
       `INSERT INTO app.student_guardians (id, organization_id, student_id, full_name, phone, relation, is_primary) VALUES
          ($1, $4, $5, 'Guardian of A', '+10000000001', 'MOTHER', true),
