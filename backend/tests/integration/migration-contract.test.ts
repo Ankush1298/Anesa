@@ -98,6 +98,7 @@ describe('contract gate against a real database', () => {
       '0017',
       '0018',
       '0019',
+      '0020',
     ]);
     expect(first.blockedBy).toBe('0009');
     expect(await ledgerOf(db)).toEqual(APPLIED_BY_DEFAULT);
@@ -119,6 +120,7 @@ describe('contract gate against a real database', () => {
       '0017',
       '0018',
       '0019',
+      '0020',
     ]);
     expect(await ledgerOf(db)).toEqual(APPLIED_BY_DEFAULT);
 
@@ -135,7 +137,7 @@ describe('contract gate against a real database', () => {
       '0017',
       '0018',
     ]);
-    expect(third.deferred).toEqual(['0019']);
+    expect(third.deferred).toEqual(['0019', '0020']);
     expect(await constraintNames(db)).toContain('ra_scope_integrity_ck');
   });
 
@@ -190,6 +192,7 @@ describe('contract gate against a real database', () => {
       '0017',
       '0018',
       '0019',
+      '0020',
     ]);
     const step2 = await migrate({ connectionString: db.migrator, allowContract: ['0009'] });
     expect(step2.applied).toEqual([

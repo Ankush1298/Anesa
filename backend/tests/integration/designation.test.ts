@@ -338,17 +338,17 @@ describe('DesignationService.list', () => {
   });
 
   it('generates zero audit records on list queries', async () => {
-    const countBefore = await adminQuery<{ n: string }>(
-      'SELECT count(*)::text AS n FROM app.audit_events WHERE organization_id = $1',
-      [ORG_A],
-    );
+    // Deterministic and independent of other test files: a tenant-wide ORG_A audit count is NOT usable here, because
+    // other files (employee, organization-settings, ...) commit ORG_A audit events concurrently on this shared database
+    // (the count moved 36 -> 39 in a failing run; the extra rows were organization.setting.update and employee.*).
+    // A transaction that has written nothing has no transaction id assigned, so a list that recorded an audit event
+    // (or wrote anything) would make pg_current_xact_id_if_assigned() non-NULL.
     await scratch(CTX.staffA, async (tx, ctx) => {
       await DesignationService.list(tx, ctx);
+      const written = await tx.query<{ xid: string | null }>(
+        'SELECT pg_current_xact_id_if_assigned()::text AS xid',
+      );
+      expect(written.rows).toEqual([{ xid: null }]);
     });
-    const countAfter = await adminQuery<{ n: string }>(
-      'SELECT count(*)::text AS n FROM app.audit_events WHERE organization_id = $1',
-      [ORG_A],
-    );
-    expect(countAfter[0]?.n).toBe(countBefore[0]?.n);
   });
 });

@@ -91,7 +91,7 @@ describe('migration plan: contract gate', () => {
     const plan = planMigrations(all, new Map());
     expect(versions(plan.deferred)).toEqual(all.slice(8).map((m) => m.version));
     expect(versions(plan.deferred)[0]).toBe('0009');
-    expect(versions(plan.deferred).at(-1)).toBe('0019');
+    expect(versions(plan.deferred).at(-1)).toBe('0020');
     expect(versions(plan.run)).toEqual(all.slice(0, 8).map((m) => m.version));
   });
 
@@ -193,11 +193,11 @@ describe('migration plan: phase boundary', () => {
       }
     });
 
-    it('ledger at 0008: --allow-contract 0009 runs 0009 through 0018 and defers 0019; without the flag everything stays deferred', () => {
+    it('ledger at 0008: --allow-contract 0009 runs 0009 through 0018 and defers 0019 AND 0020; without the flag everything stays deferred', () => {
       const plan = planMigrations(all, upTo(8), ['0009']);
       expect(versions(plan.run)).toEqual(all.slice(8, 18).map((m) => m.version)); // 0009 .. 0018
       expect(versions(plan.run).at(-1)).toBe('0018');
-      expect(versions(plan.deferred)).toEqual(['0019']);
+      expect(versions(plan.deferred)).toEqual(['0019', '0020']);
       const ordinary = planMigrations(all, upTo(8));
       expect(ordinary.run).toEqual([]);
       expect(versions(ordinary.deferred)).toEqual(all.slice(8).map((m) => m.version));
@@ -210,36 +210,54 @@ describe('migration plan: phase boundary', () => {
       );
     });
 
-    it('ledger at 0009: runs pending ordinary migrations 0010 through 0018 and defers 0019', () => {
+    it('ledger at 0009: runs pending ordinary migrations 0010 through 0018 and defers 0019 and 0020', () => {
       for (const allow of [[], ['0009']]) {
         const plan = planMigrations(all, upTo(9), allow);
         expect(versions(plan.run)).toEqual(all.slice(9, 18).map((m) => m.version)); // 0010 .. 0018
-        expect(versions(plan.deferred)).toEqual(['0019']);
+        expect(versions(plan.deferred)).toEqual(['0019', '0020']);
       }
     });
 
-    it('ledger at 0018: 0019 is deferred by default and runs ALONE when it is named; 0019 cannot join 0010-0018', () => {
+    it('ledger at 0018: 0019 and 0020 are deferred by default; naming 0019 runs 0019 FIRST and then 0020; 0019 cannot join 0010-0018', () => {
       const at18 = upTo(18);
       const ordinary = planMigrations(all, at18);
       expect(ordinary.run).toEqual([]);
-      expect(versions(ordinary.deferred)).toEqual(['0019']);
-      expect(versions(planMigrations(all, at18, ['0019']).run)).toEqual(['0019']);
+      expect(versions(ordinary.deferred)).toEqual(['0019', '0020']);
+      expect(planMigrations(all, at18, ['0019']).deferred).toEqual([]);
+      expect(versions(planMigrations(all, at18, ['0019']).run)).toEqual(['0019', '0020']);
       expect(() => planMigrations(all, upTo(9), ['0019'])).toThrow(REFUSED);
       expect(() => planMigrations(all, upTo(9), ['0019'])).toThrow(/pending 0010, /);
     });
 
-    it('ledger at 0019: nothing to run, nothing deferred', () => {
+    it('ledger at 0019: 0020 runs by itself (it is not a contract migration, so no opt-in is needed); ledger at 0020: nothing to do', () => {
       for (const allow of [[], ['0009'], ['0009', '0019']]) {
         const plan = planMigrations(all, upTo(19), allow);
-        expect(plan.run).toEqual([]);
+        expect(versions(plan.run)).toEqual(['0020']);
         expect(plan.deferred).toEqual([]);
+        const done = planMigrations(all, upTo(20), allow);
+        expect(done.run).toEqual([]);
+        expect(done.deferred).toEqual([]);
       }
     });
 
-    it('empty ledger: a brand-new database is built in one pass; 0019 is built only when it is named too', () => {
-      expect(versions(planMigrations(all, new Map(), ['0009']).run)).toEqual(
-        all.slice(0, 18).map((m) => m.version),
+    it('0020 (the database backstop of the person-identity invariant) is NOT a contract migration but is deferred behind 0019', () => {
+      expect(contractVersions()).not.toContain('0020');
+      // 0018 applied, 0019 not: even an ordinary run and --allow-contract 0009 leave 0020 deferred (blockedBy 0019)
+      for (const allow of [[], ['0009']]) {
+        const plan = planMigrations(all, upTo(18), allow);
+        expect(versions(plan.deferred)).toEqual(['0019', '0020']);
+        expect(versions(plan.run)).not.toContain('0020');
+      }
+      // never before 0019 is applied, whatever is named
+      expect(() => planMigrations(all, upTo(18), ['0020'])).toThrow(
+        /no contract migration with that exact version/,
       );
+    });
+
+    it('empty ledger: a brand-new database is built in one pass; 0019 (and with it 0020) are built only when 0019 is named too', () => {
+      const withoutBackstop = planMigrations(all, new Map(), ['0009']);
+      expect(versions(withoutBackstop.run)).toEqual(all.slice(0, 18).map((m) => m.version));
+      expect(versions(withoutBackstop.deferred)).toEqual(['0019', '0020']);
       expect(versions(planMigrations(all, new Map(), ['0009', '0019']).run)).toEqual(
         all.map((m) => m.version),
       );
@@ -252,7 +270,7 @@ describe('migration plan: phase boundary', () => {
       const gap = upTo(7);
       gap.delete('0004');
       expect(() => planMigrations(all, gap)).toThrow(/not a contiguous prefix/);
-      expect(() => planMigrations(all, new Map([...upTo(19), ['0020', 'x']]))).toThrow(
+      expect(() => planMigrations(all, new Map([...upTo(20), ['0021', 'x']]))).toThrow(
         /missing from source control/,
       );
     });

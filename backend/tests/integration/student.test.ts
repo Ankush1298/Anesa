@@ -171,7 +171,7 @@ describe('atomicity: student, audit event and idempotency claim commit or roll b
   });
 });
 
-describe('concurrency with employee creation (account lock, then migration 0016 guard)', () => {
+describe('concurrency with employee creation (shared person lock, then migration 0016 guard)', () => {
   it('employee create in flight first: the student create waits, then is refused (409) and creates nothing', async () => {
     const u = await newUser();
     const inside = gateOf();
@@ -190,7 +190,7 @@ describe('concurrency with employee creation (account lock, then migration 0016 
     await inside.wait; // the employee exists, uncommitted, and holds a share lock on the account
     const student = waiterDb.withTenant(admin, (tx) => create(tx, u));
     const outcome = statusOf(student);
-    await waitUntilBlocked('%FROM app.users%FOR UPDATE%');
+    await waitUntilBlocked('%pg_advisory_xact_lock%');
     release.open();
     await employee;
     expect(await outcome).toBe(409);
@@ -218,7 +218,7 @@ describe('concurrency with employee creation (account lock, then migration 0016 
       }),
     );
     const outcome = statusOf(employee);
-    await waitUntilBlocked('%FROM app.users%FOR SHARE%');
+    await waitUntilBlocked('%pg_advisory_xact_lock%');
     release.open();
     await student;
     expect(await outcome).toBe(409);
@@ -255,7 +255,7 @@ describe('concurrency with a role grant (the real RoleAssignmentService.grant)',
     });
     await inside.wait; // the assignment row exists, uncommitted, and holds the foreign key's share-key lock on the account
     const outcome = statusOf(waiterDb.withTenant(admin, (tx) => create(tx, u)));
-    await waitUntilBlocked('%FROM app.users%FOR UPDATE%');
+    await waitUntilBlocked('%pg_advisory_xact_lock%');
     release.open();
     await granting;
     expect(await outcome).toBe(409);
@@ -282,7 +282,7 @@ describe('concurrency with a role grant (the real RoleAssignmentService.grant)',
       });
     await inside.wait;
     const outcome = statusOf(waiterDb.withTenant(admin, (tx) => create(tx, u)));
-    await waitUntilBlocked('%FROM app.users%FOR UPDATE%');
+    await waitUntilBlocked('%pg_advisory_xact_lock%');
     release.open();
     await granting;
     expect(await outcome).toBe('resolved');
@@ -313,12 +313,10 @@ describe('concurrency with a role grant (the real RoleAssignmentService.grant)',
     expect(claims).toHaveLength(1); // only the winner's key is stored
   });
 
-  // KNOWN, UNRESOLVED RACE (docs/architecture/v3/21-students.md §6): the student create only protects its own side.
-  // RoleAssignmentService.grant reads the user without a lock and takes its foreign-key share-key lock at the very
-  // end, so a grant that starts after a student create has begun is NOT refused: it waits, then commits. This test
-  // pins the CURRENT behaviour so that a future fix (a lock plus a student-record check in the role-grant service,
-  // which needs its own design decision) has to change it deliberately.
-  it('KNOWN GAP: a grant that starts while a student create is in flight waits for it and then LANDS on the new student account', async () => {
+  // CLOSED (was the "KNOWN GAP" test): the grant takes the same per-person lock FIRST, so a grant that starts while a
+  // student create is in flight waits for it and is then refused by the student-record check. The database backstop
+  // (migration 0020) is exercised in person-identity-invariant.test.ts and security-db/person-identity-triggers.test.ts.
+  it('a grant that starts while a student create is in flight waits for it and is then REFUSED (409): no staff role lands on the new student', async () => {
     const u = await newUser();
     const roleId = await facultyRole();
     const inside = gateOf();
@@ -328,19 +326,16 @@ describe('concurrency with a role grant (the real RoleAssignmentService.grant)',
       inside.open();
       await release.wait;
     });
-    await inside.wait; // the student exists, uncommitted, and holds FOR UPDATE on the account
+    await inside.wait; // the student exists, uncommitted, and holds the person lock
     const granting = waiterDb.withTenant(admin, (tx) => grant(tx, u, roleId));
     const outcome = statusOf(granting);
-    await waitUntilBlocked('%INSERT INTO app.role_assignments%');
+    await waitUntilBlocked('%pg_advisory_xact_lock%');
     release.open();
     await creating;
-    expect(await outcome).toBe('resolved'); // the gap: nothing refuses the grant
+    expect(await outcome).toBe(409);
     expect(await students(u)).toHaveLength(1);
-    expect(
-      await adminQuery(
-        "SELECT 1 FROM app.role_assignments WHERE user_id = $1 AND status = 'ACTIVE'",
-        [u],
-      ),
-    ).toHaveLength(1);
+    expect(await adminQuery('SELECT 1 FROM app.role_assignments WHERE user_id = $1', [u])).toEqual(
+      [],
+    );
   });
 });

@@ -96,7 +96,7 @@ Resolvers declare both a **point check** (`canAccess(ctx, resource)`) and a **li
 - A grant is allowed only if all hold: (a) grantor holds `role.assignment.grant` with a scope that **contains** the target scope; (b) `(grantor's role, target role)` exists in `role_grant_rules`; (c) grantor ≠ grantee for roles granting more permissions than they already hold (no self-elevation); (d) target scope valid for the role (e.g., HOD requires DEPARTMENT scope).
 - Seed rules: COLLEGE_ADMIN may grant everything except platform realm; CAMPUS_ADMIN may grant DEPARTMENT_ADMIN/HOD/FACULTY/STAFF within their campus; DEPARTMENT_ADMIN may grant FACULTY/STAFF within their department; nobody may grant COLLEGE_ADMIN except COLLEGE_ADMIN.
 - **Last-admin protection**: revoking or suspending the last active COLLEGE_ADMIN of a tenant is rejected.
-- Every grant/revoke runs in one transaction: insert/update assignment, bump `users.authz_version`, audit row, outbox event. Concurrent grants are serialized per target user with `SELECT … FOR UPDATE` on the user row.
+- Every grant/revoke runs in one transaction: insert/update assignment, bump `users.authz_version`, audit row, outbox event. Concurrent grants are serialized per target user with `SELECT … FOR UPDATE` on the user row. *(Implementation note: the repository serialises grants, student creation and employee creation per person with one advisory lock, `shared/authorization/person-identity.ts`; see `21-students.md` §6.)*
 - Expiring assignments: nightly expiry job + resolution by date at read time (an expired assignment is ignored immediately even before the job runs).
 
 ---
@@ -120,6 +120,7 @@ Resolvers declare both a **point check** (`canAccess(ctx, resource)`) and a **li
 - Uniqueness and overlap rules live in the database (UNIQUE, partial UNIQUE, EXCLUDE), not only in code.
 - Sequences (admission numbers, request numbers) use `number_sequences` with row locks.
 - Appends (attendance submission, approvals) are idempotent via natural keys / idempotency keys.
+- Person identity: an account with a student record holds no staff-capable role assignment (`STUDENT`-role assignments excepted; pending future-dated ones count). Enforced by the services under a per-person advisory lock and by database triggers (`21-students.md` §6, migration `0020`; the triggers are active only once the gated migrations have run).
 - Authorization cache is keyed by `authz_version`, so a revoked permission cannot be served from cache after commit.
 
 ---

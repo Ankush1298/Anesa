@@ -15,7 +15,7 @@ measured**, and no restore procedure has been exercised.
 Companion document: `docs/runbooks/migration-0009-recovery.md` covers what to do when a step fails or its outcome is
 uncertain. It is a design for review, **not** a procedure validated against production.
 
-Later contract migration: `0019_students_required_dates_contract.sql` follows the same gating rules; see `docs/runbooks/students-contract-rollout.md`. The ordinary run described here applies `0001`-`0008`; `--allow-contract 0009` then applies `0009`-`0018` and defers `0019`.
+Later contract migration: `0019_students_required_dates_contract.sql` follows the same gating rules; see `docs/runbooks/students-contract-rollout.md`. The ordinary run described here applies `0001`-`0008`; `--allow-contract 0009` then applies `0009`-`0018` and defers `0019` and `0020`. `0020` (the person-identity database backstop) is applied only after `0019`, so that backstop is inactive until then; see the students runbook §6, which also holds the read-only preflight to run first.
 
 Nothing here replaces an approved change window. A separate, explicit approval is required before running either
 migration against a persistent database.

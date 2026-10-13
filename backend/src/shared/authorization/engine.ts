@@ -85,20 +85,26 @@ export class AuthorizationEngine {
   }
 
   /**
-   * Does the account hold ANY effective role assignment (any role, any scope)? Same predicate as loadGrants and
-   * describeActor, so "active" cannot drift from what the engine grants. Used by writers that must not turn a
-   * staff account into a student (docs/architecture/v3/21-students.md §6). Not an authorization decision.
+   * Does the account hold a STAFF-CAPABLE role assignment? THE conflict predicate of the person-identity invariant
+   * (docs/architecture/v3/21-students.md §6): a role other than STUDENT (any other code, known or not: fail closed),
+   * `status = 'ACTIVE'` and not ended (`valid_until` NULL or in the future). `valid_from` is deliberately IGNORED: a
+   * future-dated assignment becomes effective later without any write, so it conflicts now. Revoked, expired and
+   * ended-window rows never conflict. The same predicate is written in migration 0020's triggers and in the preflight
+   * SQL of docs/runbooks/students-contract-rollout.md; tests/security-db/person-identity-triggers.test.ts pins parity.
+   * Not an authorization decision, and NOT the engine's "effective grant" rule (that one requires valid_from <= now()).
    */
-  static async hasActiveAssignment(
+  static async hasStaffCapableAssignment(
     tx: TenantTx,
     organizationId: string,
     userId: string,
   ): Promise<boolean> {
     const res = await tx.query(
-      `SELECT 1 FROM app.role_assignments
-        WHERE organization_id = $1 AND user_id = $2
-          AND status = 'ACTIVE' AND valid_from <= now()
-          AND (valid_until IS NULL OR valid_until > now())
+      `SELECT 1 FROM app.role_assignments ra
+         JOIN app.roles r ON r.organization_id = ra.organization_id AND r.id = ra.role_id
+        WHERE ra.organization_id = $1 AND ra.user_id = $2
+          AND r.code <> 'STUDENT'
+          AND ra.status = 'ACTIVE'
+          AND (ra.valid_until IS NULL OR ra.valid_until > now())
         LIMIT 1`,
       [organizationId, userId],
     );

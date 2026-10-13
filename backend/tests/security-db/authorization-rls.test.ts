@@ -79,7 +79,10 @@ describe('authorization tables: student boundary (RLS)', () => {
     const mine = await runAs(CTX.studentA, 'SELECT user_id FROM app.role_assignments');
     expect(mine.rows.map((r) => r['user_id'])).toEqual([USER_A]);
 
-    const roleA = await roleId(ORG_A, 'COLLEGE_ADMIN');
+    // The STUDENT role on purpose: a BEFORE ROW trigger (migration 0020) runs before the RLS WITH CHECK, and refuses a
+    // staff-capable role for a student account with 23P01 first. The STUDENT role passes the trigger, so this still
+    // proves the RLS boundary (42501). The trigger's own answer is tested in person-identity-triggers.test.ts.
+    const roleA = await roleId(ORG_A, 'STUDENT');
     const ins = await runAs(
       CTX.studentA,
       `INSERT INTO app.role_assignments (id, organization_id, user_id, role_id, scope_type)
@@ -321,6 +324,8 @@ describe('no accidental probe or debug objects', () => {
       'current_user_id',
       'enforce_immutable_keys',
       'enforce_person_record_exclusive',
+      'enforce_student_staff_role_exclusive_on_assignment',
+      'enforce_student_staff_role_exclusive_on_student',
       'get_identity_memberships',
       'reject_audit_mutation',
       'role_assignments_guard',

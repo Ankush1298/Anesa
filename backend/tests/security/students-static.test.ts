@@ -36,8 +36,50 @@ describe('Students: exactly one source file writes app.students (the audited ser
   it('the student service reaches role assignments only through the authorization layer and never grants roles', () => {
     const text = readFileSync(join(backend, 'src/modules/students/student.service.ts'), 'utf8');
     expect(text).not.toMatch(/role_assignments/);
-    expect(text).toMatch(/AuthorizationEngine\.hasActiveAssignment\(/);
+    expect(text).toMatch(/AuthorizationEngine\.hasStaffCapableAssignment\(/);
+    expect(text).not.toMatch(/hasActiveAssignment/);
     expect(text).not.toMatch(/RoleAssignmentService|seedTenantRoles/);
+  });
+
+  it('the three person-identity writers take the shared person lock BEFORE any other database statement', () => {
+    const first = (file: string, needle: RegExp): [number, number] => {
+      const text = readFileSync(join(backend, file), 'utf8');
+      const create =
+        text.indexOf('static async create(') >= 0 ? 'static async create(' : 'static async grant(';
+      const body = text.slice(text.indexOf(create));
+      return [body.search(/lockPersonIdentity\(/), body.search(needle)];
+    };
+    for (const [file, firstOther] of [
+      [
+        'src/modules/students/student.service.ts',
+        /AuthorizationEngine\.assert\(|runIdempotent\(|tx\.query/,
+      ],
+      ['src/modules/people/employee.service.ts', /AuthorizationEngine\.assert\(|tx\.query/],
+      ['src/shared/authorization/assignments.ts', /AuthorizationEngine\.assert\(|tx\.query/],
+    ] as const) {
+      const [lock, other] = first(file, firstOther);
+      expect(lock, file).toBeGreaterThan(-1);
+      expect(other, file).toBeGreaterThan(lock);
+    }
+  });
+
+  it('the person lock key is the one of migrations 0016 and 0020, and the helper is the only place that builds it', () => {
+    const helper = readFileSync(
+      join(backend, 'src/shared/authorization/person-identity.ts'),
+      'utf8',
+    );
+    expect(helper).toContain("'app.person_record_exclusive:'");
+    for (const n of ['0016_person_record_exclusivity', '0020_student_staff_role_exclusivity']) {
+      expect(
+        readFileSync(join(backend, '..', 'database/migrations', `${n}.sql`), 'utf8'),
+      ).toContain(
+        "'app.person_record_exclusive:' || NEW.organization_id::text || ':' || NEW.user_id::text",
+      );
+    }
+    for (const f of walk(join(backend, 'src'))) {
+      if (f.endsWith('person-identity.ts')) continue;
+      expect(readFileSync(f, 'utf8'), f).not.toContain('person_record_exclusive:');
+    }
   });
 
   it('the student routes expose exactly POST / and GET /:id (no list, PATCH, DELETE or status route yet)', () => {

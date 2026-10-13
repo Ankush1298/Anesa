@@ -63,10 +63,10 @@ beforeAll(async () => {
     [STUDENT, ORG, USER],
   );
 
-  // now 0017 (and the ordinary 0018) on top; the 0019 contract step stays deferred (it has its own test file)
+  // now 0017 (and the ordinary 0018) on top; the 0019 contract step (and 0020 behind it) stays deferred (it has its own test file)
   const after = await migrate({ connectionString: db.migrator });
   expect(after.applied).toEqual(['0017', '0018']);
-  expect(after.deferred).toEqual(['0019']);
+  expect(after.deferred).toEqual(['0019', '0020']);
 }, 180_000);
 
 afterAll(dropAll);

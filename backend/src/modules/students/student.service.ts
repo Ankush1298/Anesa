@@ -4,6 +4,7 @@ import { isUuidV7, uuidv7 } from '../../shared/ids/uuidv7.js';
 import { isTrustedContext, type TrustedContext } from '../../shared/tenancy/trusted-context.js';
 import { recordAudit, type AuditRequestMeta } from '../../shared/audit/index.js';
 import { AuthorizationEngine } from '../../shared/authorization/engine.js';
+import { lockPersonIdentity } from '../../shared/authorization/person-identity.js';
 import {
   parseIdempotencyKey,
   runIdempotent,
@@ -94,6 +95,10 @@ export class StudentService {
     const admissionDate = parseDate(input.admissionDate, 'admissionDate');
     const reason = parseReason(input.reason);
 
+    // FIRST database statement: the per-person lock shared with employee creation and role grants (and re-taken, as a
+    // no-op, by the migration 0016/0020 triggers). See shared/authorization/person-identity.ts for the lock order.
+    await lockPersonIdentity(tx, ctx.tenantId, userId);
+
     // Authorization: held at all (403), then ORGANIZATION scope (403): a student has no campus/department yet, so a
     // scoped holder cannot create one.
     await AuthorizationEngine.assert(tx, ctx, 'student.record.create');
@@ -122,9 +127,9 @@ export class StudentService {
         request: { userId, admissionNumber, admissionDate, reason },
       },
       async () => {
-        // FOR UPDATE (not FOR SHARE): it conflicts with the FOR KEY SHARE lock a concurrent role grant takes on the
-        // account through its foreign key, so a grant that is in flight is either seen by the check below or waits.
-        // This closes only THIS direction; see docs/architecture/v3/21-students.md §6 for the remaining gap.
+        // The person lock above already serialises this create against employee creation and role grants for this
+        // account; FOR UPDATE additionally keeps other writers of the account row (and FK share-lockers) out until
+        // commit. Both directions are covered: docs/architecture/v3/21-students.md §6.
         const user = await tx.query<{ status: string }>(
           `SELECT status FROM app.users WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
           [ctx.tenantId, userId],
@@ -140,13 +145,14 @@ export class StudentService {
         }
 
         // actor_kind is derived from the students mapping: a student record turns the account into a STUDENT actor
-        // whose staff permissions stop working. Refuse any account with an active role assignment, the creator's own
-        // included. Predicate verbatim from AuthorizationEngine.loadGrants (docs 21 §6).
-        if (await AuthorizationEngine.hasActiveAssignment(tx, ctx.tenantId, userId)) {
+        // whose staff permissions stop working. Refuse any account with a STAFF-CAPABLE role assignment (any role but
+        // STUDENT, pending future-dated ones included), the creator's own account too. A STUDENT-role assignment is
+        // allowed: it is the student's own role. The race-free guarantee is the migration 0020 trigger.
+        if (await AuthorizationEngine.hasStaffCapableAssignment(tx, ctx.tenantId, userId)) {
           throw new AppError(
             409,
             'CONFLICT',
-            'This account holds an active role assignment and cannot be given a student record.',
+            'This account holds a staff role assignment (active or not yet effective) and cannot be given a student record.',
           );
         }
 
@@ -171,7 +177,11 @@ export class StudentService {
           const e = err as { code?: string; constraint?: string };
           // Race loser of the exclusivity guard (migration 0016). Only this exact code AND constraint is mapped.
           if (e.code === '23P01' && e.constraint === 'person_record_exclusive') {
-            throw new AppError(409, 'CONFLICT', 'This account already has an employee record.');
+            throw new AppError(
+              409,
+              'CONFLICT',
+              'This account already has an employee record or a staff role assignment.',
+            );
           }
           if (e.code === '23505') {
             throw new AppError(

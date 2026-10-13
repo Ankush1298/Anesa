@@ -135,6 +135,18 @@ describe('migrations 0008 / 0009: hygiene (same bar as 0007)', () => {
     expect(read(`database/migrations/${names[0]}`)).toMatch(/--allow-contract 0009/);
     expect(read(`database/migrations/${names[1]}`)).toMatch(/--allow-contract 0019/);
   });
+
+  it('0020 (person-identity backstop) is NOT a contract migration; it documents that the runner defers it behind 0019 and that the backstop is inactive until then', () => {
+    const name = readdirSync(resolve(root, 'database/migrations')).find((f) =>
+      f.startsWith('0020'),
+    );
+    expect(name).toBe('0020_student_staff_role_exclusivity.sql');
+    const text = read(`database/migrations/${name}`);
+    expect(text).toMatch(/ROLLOUT DEPENDENCY/);
+    expect(text).toMatch(/INACTIVE until/);
+    expect(text).toMatch(/--allow-contract 0019/);
+    expect(read('docs/runbooks/students-contract-rollout.md')).toMatch(/backstop is INACTIVE/);
+  });
 });
 
 describe('contract gate: no code path authorises a contract migration implicitly', () => {
@@ -164,6 +176,7 @@ describe('contract gate: no code path authorises a contract migration implicitly
     expect(tests.map((f) => f.path).sort()).toEqual([
       'tests/integration/migration-0017.test.ts',
       'tests/integration/migration-0019.test.ts',
+      'tests/integration/migration-0020.test.ts',
       'tests/integration/migration-contract.test.ts',
       'tests/integration/migrations.test.ts',
       'tests/integration/person-record-exclusivity.test.ts',

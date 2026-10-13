@@ -5,6 +5,7 @@ import { isTrustedContext, type TrustedContext } from '../tenancy/trusted-contex
 import { recordAudit, type AuditRequestMeta } from '../audit/index.js';
 import { SCOPE_TYPES, type ScopeType } from './catalog.js';
 import { AuthorizationEngine, scopeContains, type Scope } from './engine.js';
+import { lockPersonIdentity } from './person-identity.js';
 import { GRANT_RULES, ROLE_SCOPE_TYPES, isRoleCode, type RoleCode } from './role-matrix.js';
 
 function forbidden(): AppError {
@@ -135,6 +136,13 @@ export class RoleAssignmentService {
     }
     const scope: Scope = { type: scopeType, id: scopeId ?? null };
 
+    // FIRST database statement: the per-person lock shared with student and employee creation, taken before any other
+    // lock or read the decision depends on (shared/authorization/person-identity.ts). It is taken before the
+    // permission check on purpose (the lock order has no exceptions); no HTTP route calls this service yet, and a
+    // route that does must gate the permission first, as every route does through its `config.permission`.
+    if (typeof targetUserId === 'string' && isUuidV7(targetUserId)) {
+      await lockPersonIdentity(tx, ctx.tenantId, targetUserId);
+    }
     await AuthorizationEngine.assert(tx, ctx, 'role.assignment.grant');
     if (ctx.userId === targetUserId) throw forbidden(); // no self-elevation
 
@@ -155,6 +163,31 @@ export class RoleAssignmentService {
     }
     await this.assertMayManage(tx, ctx, 'role.assignment.grant', roleCode, scope);
 
+    // Person-identity invariant (docs/architecture/v3/21-students.md §6), decided after authorization so an
+    // unauthorised caller learns nothing about student records, and under the lock taken above:
+    //  * a STUDENT role belongs to a student: it requires an existing student record (service rule only; the trigger
+    //    of migration 0020 does not impose it, so raw writers keep their order freedom);
+    //  * any OTHER role is refused on an account that has a student record (the trigger of 0020 is the backstop).
+    const student = await tx.query(
+      'SELECT 1 FROM app.students WHERE organization_id = $1 AND user_id = $2',
+      [ctx.tenantId, targetUserId],
+    );
+    const hasStudentRecord = (student.rowCount ?? 0) > 0;
+    if (roleCode === 'STUDENT' && !hasStudentRecord) {
+      throw new AppError(
+        409,
+        'CONFLICT',
+        'The STUDENT role can only be granted to an account that already has a student record.',
+      );
+    }
+    if (roleCode !== 'STUDENT' && hasStudentRecord) {
+      throw new AppError(
+        409,
+        'CONFLICT',
+        'This account has a student record and cannot be given a staff role.',
+      );
+    }
+
     // Checked only AFTER the grantor is authorised for this scope, so an unauthorised caller cannot use the
     // response to learn which campus/department ids exist. Unknown, other-tenant, INACTIVE, soft-deleted
     // scopes (and a department under an INACTIVE campus) are the same 404 as an unknown role or user.
@@ -174,20 +207,33 @@ export class RoleAssignmentService {
     const id = uuidv7();
     // scope_id stays the engine's source of truth; the typed column that matches the scope type is
     // written with the same value (the others stay NULL) so the 0009 integrity check holds.
-    await tx.query(
-      `INSERT INTO app.role_assignments (id, organization_id, user_id, role_id, scope_type, scope_id, campus_id, department_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-      [
-        id,
-        ctx.tenantId,
-        targetUserId,
-        roleId,
-        scopeType,
-        scopeId ?? null,
-        scopeType === 'CAMPUS' ? scopeId : null,
-        scopeType === 'DEPARTMENT' ? scopeId : null,
-      ],
-    );
+    try {
+      await tx.query(
+        `INSERT INTO app.role_assignments (id, organization_id, user_id, role_id, scope_type, scope_id, campus_id, department_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [
+          id,
+          ctx.tenantId,
+          targetUserId,
+          roleId,
+          scopeType,
+          scopeId ?? null,
+          scopeType === 'CAMPUS' ? scopeId : null,
+          scopeType === 'DEPARTMENT' ? scopeId : null,
+        ],
+      );
+    } catch (err) {
+      // Backstop of migration 0020 (a writer that bypassed the check above): same answer as the explicit check.
+      const e = err as { code?: string; constraint?: string };
+      if (e.code === '23P01' && e.constraint === 'person_record_exclusive') {
+        throw new AppError(
+          409,
+          'CONFLICT',
+          'This account has a student record and cannot be given a staff role.',
+        );
+      }
+      throw err;
+    }
     await recordAudit(
       tx,
       ctx,

@@ -77,7 +77,7 @@ beforeAll(async () => {
   // now the ORDINARY run: 0017 (expand) and 0018; the 0019 contract step is deferred
   const after = await migrate({ connectionString: db.migrator });
   expect(after.applied).toEqual(['0017', '0018']);
-  expect(after.deferred).toEqual(['0019']);
+  expect(after.deferred).toEqual(['0019', '0020']);
 }, 180_000);
 
 afterAll(dropAll);
@@ -86,7 +86,7 @@ describe('0019 is gated', () => {
   it('an ordinary run never applies it, and names it as the blocker', async () => {
     const r = await migrate({ connectionString: db.migrator });
     expect(r.applied).toEqual([]);
-    expect(r.deferred).toEqual(['0019']);
+    expect(r.deferred).toEqual(['0019', '0020']); // 0020 (the person-identity backstop) waits behind 0019
     expect(r.blockedBy).toBe('0019');
     expect(await ledger()).not.toContain('0019');
     expect(await columns()).toEqual({ admission_date: 'YES', status_changed_at: 'YES' });
@@ -141,9 +141,9 @@ describe('0019 after an operator-approved backfill', () => {
       [STUDENT],
     );
     const r = await migrate({ connectionString: db.migrator, allowContract: ['0019'] });
-    expect(r.applied).toEqual(['0019']);
+    expect(r.applied).toEqual(['0019', '0020']); // 0020 follows 0019 in the same invocation, without its own opt-in
     expect(r.deferred).toEqual([]);
-    expect((await ledger()).at(-1)).toBe('0019');
+    expect((await ledger()).slice(-2)).toEqual(['0019', '0020']);
 
     expect(await columns()).toEqual({ admission_date: 'NO', status_changed_at: 'NO' });
     expect(await checkNames()).toEqual([]); // the temporary NOT VALID checks are dropped

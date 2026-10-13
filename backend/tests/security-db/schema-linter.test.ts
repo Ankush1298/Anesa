@@ -190,4 +190,23 @@ describe('schema linter (S-2)', () => {
       'users',
     ]);
   });
+
+  it('person-identity trigger functions (0016, 0020): SECURITY INVOKER (they must run as the writer, under RLS), pinned search_path, no PUBLIC execute, volatile', async () => {
+    const rows = await adminQuery<{ proname: string }>(
+      `SELECT p.proname FROM pg_proc p
+        WHERE p.pronamespace = 'app'::regnamespace AND p.proname LIKE 'enforce\\_%exclusive%' ESCAPE '\\'
+          AND (p.prosecdef OR p.provolatile <> 'v' OR p.proconfig IS DISTINCT FROM ARRAY['search_path=pg_catalog']
+               OR has_function_privilege('public', p.oid, 'EXECUTE'))`,
+    );
+    expect(rows).toEqual([]);
+    const all = await adminQuery<{ proname: string }>(
+      `SELECT p.proname FROM pg_proc p WHERE p.pronamespace = 'app'::regnamespace
+          AND p.proname LIKE 'enforce\\_%exclusive%' ESCAPE '\\' ORDER BY 1`,
+    );
+    expect(all.map((r) => r.proname)).toEqual([
+      'enforce_person_record_exclusive',
+      'enforce_student_staff_role_exclusive_on_assignment',
+      'enforce_student_staff_role_exclusive_on_student',
+    ]);
+  });
 });

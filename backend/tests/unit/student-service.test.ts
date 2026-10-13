@@ -35,6 +35,7 @@ function scripted(s: Script = {}): { tx: TenantTx; seen: string[] } {
   const tx = {
     query: (text: string) => {
       seen.push(text.replace(/\s+/g, ' ').trim().slice(0, 48));
+      if (text.includes('pg_advisory_xact_lock')) return Promise.resolve({ rows: [], rowCount: 1 });
       if (text.includes('JOIN app.role_permissions'))
         return Promise.resolve({ rows: grants, rowCount: grants.length });
       if (text.includes('INSERT INTO app.idempotency_keys'))
@@ -74,7 +75,7 @@ describe('StudentService.create: database refusals become controlled 409s', () =
       run({ insertError: { code: '23P01', constraint: 'person_record_exclusive' } }),
     ).rejects.toMatchObject({
       statusCode: 409,
-      message: 'This account already has an employee record.',
+      message: 'This account already has an employee record or a staff role assignment.',
     });
   });
 
@@ -142,10 +143,12 @@ describe('StudentService.create: order of checks', () => {
     expect(Object.keys(ok.body).sort()).toEqual(['data', 'success']);
   });
 
-  it('the account is locked FOR UPDATE before the role-assignment and employee checks', async () => {
+  it('the person lock is the FIRST statement; the account is then locked FOR UPDATE before the role-assignment and employee checks', async () => {
     const { tx, seen } = scripted();
     await StudentService.create(tx, ctx, input, { idempotencyKey: KEY });
     const at = (needle: string): number => seen.findIndex((t) => t.includes(needle));
+    expect(seen[0]).toContain('pg_advisory_xact_lock');
+    expect(seen.filter((t) => t.includes('pg_advisory_xact_lock'))).toHaveLength(1);
     expect(at('SELECT status FROM app.users')).toBeGreaterThan(
       at('INSERT INTO app.idempotency_keys'),
     );

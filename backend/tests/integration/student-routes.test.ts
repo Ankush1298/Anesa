@@ -463,7 +463,7 @@ describe('POST /students: account and relationship safeguards', () => {
     expect(await studentRows(u)).toEqual([]);
   });
 
-  it('409 for an account with an active role assignment, at any scope, and nothing is created', async () => {
+  it('409 for an account with a staff-capable role assignment, at any scope, and nothing is created', async () => {
     for (const [role, scope] of [
       ['FACULTY', { type: 'ORGANIZATION' as const }],
       ['CAMPUS_ADMIN', { type: 'CAMPUS' as const, id: T.campusId }],
@@ -473,7 +473,7 @@ describe('POST /students: account and relationship safeguards', () => {
       const r = await post('admin', body(u));
       expect(r.statusCode, role).toBe(409);
       expect(r.json<{ error: { message: string } }>().error.message).toMatch(
-        /active role assignment/,
+        /staff role assignment/,
       );
       expect(await studentRows(u)).toEqual([]);
     }
@@ -482,13 +482,11 @@ describe('POST /students: account and relationship safeguards', () => {
   it('409 when the creator targets their OWN account (self-targeting is not exempt)', async () => {
     const r = await post('admin', body(T.users.admin));
     expect(r.statusCode).toBe(409);
-    expect(r.json<{ error: { message: string } }>().error.message).toMatch(
-      /active role assignment/,
-    );
+    expect(r.json<{ error: { message: string } }>().error.message).toMatch(/staff role assignment/);
     expect(await studentRows(T.users.admin)).toEqual([]);
   });
 
-  it('the predicate is the engine predicate: revoked, expired-status, ended and not-yet-valid assignments do NOT block', async () => {
+  it('the conflict predicate: revoked, expired-status and ended-window staff assignments do NOT block', async () => {
     const cases: [string, { status?: string; validFrom?: string; validUntil?: string | null }][] = [
       ['revoked', { status: 'REVOKED' }],
       ['expired status', { status: 'EXPIRED' }],
@@ -499,15 +497,46 @@ describe('POST /students: account and relationship safeguards', () => {
           validUntil: new Date(Date.now() - 86_400_000).toISOString(),
         },
       ],
-      // KNOWN LIMITATION (docs/architecture/v3/21-students.md §6): a future-dated assignment is not active yet, so it does
-      // not block; it can become active later without any write, and the account is then both student and staff.
-      ['future-dated', { validFrom: new Date(Date.now() + 86_400_000).toISOString() }],
     ];
     for (const [label, extra] of cases) {
       const u = await newUser();
       await assignRole(u, 'FACULTY', { type: 'ORGANIZATION' }, extra);
       const r = await post('admin', body(u));
       expect(r.statusCode, label).toBe(201);
+    }
+  });
+
+  it('a FUTURE-DATED active staff assignment blocks (valid_from is ignored): it would become effective later without any write', async () => {
+    for (const validUntil of [null, new Date(Date.now() + 10 * 86_400_000).toISOString()]) {
+      const u = await newUser();
+      await assignRole(
+        u,
+        'FACULTY',
+        { type: 'ORGANIZATION' },
+        { validFrom: new Date(Date.now() + 86_400_000).toISOString(), validUntil },
+      );
+      const r = await post('admin', body(u));
+      expect(r.statusCode, String(validUntil)).toBe(409);
+      expect(r.json<{ error: { message: string } }>().error.message).toMatch(
+        /staff role assignment/,
+      );
+      expect(await studentRows(u)).toEqual([]);
+    }
+  });
+
+  it("a STUDENT-role assignment never blocks, whatever its window (it is the student's own role)", async () => {
+    const day = 86_400_000;
+    for (const extra of [
+      {},
+      { validFrom: new Date(Date.now() + day).toISOString() },
+      {
+        validFrom: new Date(Date.now() - 2 * day).toISOString(),
+        validUntil: new Date(Date.now() + day).toISOString(),
+      },
+    ]) {
+      const u = await newUser();
+      await assignRole(u, 'STUDENT', { type: 'ORGANIZATION' }, extra);
+      expect((await post('admin', body(u))).statusCode, JSON.stringify(extra)).toBe(201);
     }
   });
 

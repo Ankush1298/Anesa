@@ -17,6 +17,7 @@ import {
   type ListEmployeesQuery,
   type UpdateEmployeeBody,
 } from './employee.schemas.js';
+import { lockPersonIdentity } from '../../shared/authorization/person-identity.js';
 import { invalid, parseDate, parseReason } from './validation.js';
 
 const CODE_RE = new RegExp(EMPLOYEE_CODE_PATTERN);
@@ -92,6 +93,10 @@ export class EmployeeService {
     }
     const joiningDate = parseDate(input.joiningDate, 'joiningDate');
     const reason = parseReason(input.reason);
+
+    // FIRST database statement: the per-person lock shared with student creation and role grants. Employee creation
+    // gains no role-eligibility rule from it; it only joins the common lock order (shared/authorization/person-identity.ts).
+    await lockPersonIdentity(tx, ctx.tenantId, input.userId);
 
     // Authorization: held at all (403), then ORGANIZATION scope (403): a record has no campus/department to be
     // contained in, so a scoped holder cannot create one.
