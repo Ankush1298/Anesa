@@ -20,14 +20,32 @@ const sql0017 = readFileSync(
 /** Executable SQL only: comments removed so prose cannot satisfy or trip a pattern. */
 const code0017 = sql0017.replace(/--[^\n]*/g, '');
 
-describe('Students Phase 1: nothing in src writes students yet', () => {
-  it('no source file updates or inserts app.students (the audited service and routes are a later phase)', () => {
-    // When the status workflow ships, replace this with an allowlist of exactly the student service file.
+describe('Students: exactly one source file writes app.students (the audited service)', () => {
+  it('only modules/students/student.service.ts inserts app.students, and nothing updates it yet', () => {
+    // Status, update and correction workflows are later phases; when one ships, extend this allowlist deliberately.
+    const writers: string[] = [];
     for (const f of walk(join(backend, 'src'))) {
       const text = readFileSync(f, 'utf8');
       expect(text, f).not.toMatch(/UPDATE\s+app\.students/i);
-      expect(text, f).not.toMatch(/INSERT\s+INTO\s+app\.students/i);
+      expect(text, f).not.toMatch(/DELETE\s+FROM\s+app\.students/i);
+      if (/INSERT\s+INTO\s+app\.students/i.test(text)) writers.push(f.slice(backend.length + 1));
     }
+    expect(writers).toEqual(['src/modules/students/student.service.ts']);
+  });
+
+  it('the student service reaches role assignments only through the authorization layer and never grants roles', () => {
+    const text = readFileSync(join(backend, 'src/modules/students/student.service.ts'), 'utf8');
+    expect(text).not.toMatch(/role_assignments/);
+    expect(text).toMatch(/AuthorizationEngine\.hasActiveAssignment\(/);
+    expect(text).not.toMatch(/RoleAssignmentService|seedTenantRoles/);
+  });
+
+  it('the student routes expose exactly POST / and GET /:id (no list, PATCH, DELETE or status route yet)', () => {
+    const text = readFileSync(join(backend, 'src/modules/students/student.routes.ts'), 'utf8');
+    const verbs = [...text.matchAll(/app\.(get|post|put|patch|delete)</g)].map((m) => m[1]);
+    expect(verbs.sort()).toEqual(['get', 'post']);
+    expect(text).toMatch(/permission: 'student\.record\.create'/);
+    expect(text).toMatch(/permission: 'student\.profile\.read'/);
   });
 });
 

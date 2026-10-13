@@ -85,6 +85,27 @@ export class AuthorizationEngine {
   }
 
   /**
+   * Does the account hold ANY effective role assignment (any role, any scope)? Same predicate as loadGrants and
+   * describeActor, so "active" cannot drift from what the engine grants. Used by writers that must not turn a
+   * staff account into a student (docs/architecture/v3/21-students.md §6). Not an authorization decision.
+   */
+  static async hasActiveAssignment(
+    tx: TenantTx,
+    organizationId: string,
+    userId: string,
+  ): Promise<boolean> {
+    const res = await tx.query(
+      `SELECT 1 FROM app.role_assignments
+        WHERE organization_id = $1 AND user_id = $2
+          AND status = 'ACTIVE' AND valid_from <= now()
+          AND (valid_until IS NULL OR valid_until > now())
+        LIMIT 1`,
+      [organizationId, userId],
+    );
+    return (res.rowCount ?? 0) > 0;
+  }
+
+  /**
    * What the actor can do, for UI rendering only (menus). Resolved server-side per request from the
    * same effective-assignment rule as every decision; it is NOT an authorization decision: each
    * action is still checked by assert(). Sorted, so the answer is deterministic.

@@ -93,15 +93,15 @@ describe('students: who may update what (0017)', () => {
     expect(ok.error).toBeUndefined();
     expect(ok.rows[0]).toEqual({ status: 'ADMITTED', stamped: true });
 
-    // NOT VALID check: refused for new rows even though legacy rows are not examined (nothing is persisted)
+    // NOT NULL (migration 0019 replaced the NOT VALID check of 0017): refused for new rows (nothing is persisted)
     const missing = await runAs(
       CTX.staffA,
       `INSERT INTO app.students (id, organization_id, user_id, admission_number)
        VALUES ($1, $2, $3, 'REC-2')`,
       [NEW_STUDENT_ID, CTX.staffA.tenant, NOROLE_A],
     );
-    expect(missing.error?.code).toBe('23514');
-    expect(missing.error?.message).toMatch(/students_admission_date_ck/);
+    expect(missing.error?.code).toBe('23502');
+    expect(missing.error?.message).toMatch(/admission_date/);
   });
 });
 
@@ -147,8 +147,8 @@ describe('students: admission number immutability and the guard function (0017)'
   });
 });
 
-describe('students: schema shape of the expand step (0017)', () => {
-  it('admission_date has no default; status_changed_at has a default; both are nullable until the contract step', async () => {
+describe('students: schema shape after the expand (0017) and contract (0019) steps', () => {
+  it('admission_date has no default; status_changed_at has a default; both are NOT NULL since the 0019 contract step', async () => {
     const cols = await adminQuery<{
       column_name: string;
       is_nullable: string;
@@ -159,22 +159,19 @@ describe('students: schema shape of the expand step (0017)', () => {
           AND column_name IN ('admission_date', 'status_changed_at') ORDER BY column_name`,
     );
     expect(cols).toEqual([
-      { column_name: 'admission_date', is_nullable: 'YES', column_default: null },
-      { column_name: 'status_changed_at', is_nullable: 'YES', column_default: 'now()' },
+      { column_name: 'admission_date', is_nullable: 'NO', column_default: null },
+      { column_name: 'status_changed_at', is_nullable: 'NO', column_default: 'now()' },
     ]);
   });
 
-  it('the two NOT NULL checks exist and are NOT VALID (legacy rows are not examined)', async () => {
-    // When the later contract migration lands, these checks are validated and dropped: update this test with it.
-    const c = await adminQuery<{ conname: string; convalidated: boolean }>(
-      `SELECT conname, convalidated FROM pg_constraint
-        WHERE conrelid = 'app.students'::regclass AND conname IN ('students_admission_date_ck', 'students_status_changed_at_ck')
-        ORDER BY conname`,
+  it('the temporary NOT VALID checks of 0017 are gone: 0019 validated them, set NOT NULL and dropped them', async () => {
+    // The expand-step shape (nullable columns, NOT VALID checks) is proved on a legacy database by
+    // tests/integration/migration-0017.test.ts; the contract step by tests/integration/migration-0019.test.ts.
+    const c = await adminQuery(
+      `SELECT conname FROM pg_constraint
+        WHERE conrelid = 'app.students'::regclass AND conname IN ('students_admission_date_ck', 'students_status_changed_at_ck')`,
     );
-    expect(c).toEqual([
-      { conname: 'students_admission_date_ck', convalidated: false },
-      { conname: 'students_status_changed_at_ck', convalidated: false },
-    ]);
+    expect(c).toEqual([]);
   });
 
   it('student.record.create is catalogued as SENSITIVE', async () => {

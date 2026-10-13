@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import pg from 'pg';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { uuidv7 } from '../../src/shared/ids/uuidv7.js';
-import { DEFAULT_MIGRATIONS_DIR, contractVersions, migrate } from '../../tools/db/migrate.js';
+import { DEFAULT_MIGRATIONS_DIR, migrate } from '../../tools/db/migrate.js';
 import { dropAll, freshDatabase, sql, type FreshDb } from '../support/fresh-db.js';
 
 // Migration 0017 on a database that ALREADY holds a student row (a "legacy" row from before 0017). Own throw-away
@@ -30,13 +30,13 @@ beforeAll(async () => {
   db = await freshDatabase();
   // everything BEFORE 0017
   const dir = mkdtempSync(join(tmpdir(), 'campusos-mig17-'));
-  for (const f of readdirSync(DEFAULT_MIGRATIONS_DIR).filter((x) => !x.startsWith('0017'))) {
+  for (const f of readdirSync(DEFAULT_MIGRATIONS_DIR).filter((x) => Number(x.slice(0, 4)) < 17)) {
     cpSync(join(DEFAULT_MIGRATIONS_DIR, f), join(dir, f));
   }
   const before = await migrate({
     connectionString: db.migrator,
     dir,
-    allowContract: contractVersions(),
+    allowContract: ['0009'], // the directory holds 0001-0016 only: 0019 does not exist in it
   });
   expect(before.applied.at(-1)).toBe('0016');
 
@@ -63,9 +63,10 @@ beforeAll(async () => {
     [STUDENT, ORG, USER],
   );
 
-  // now 0017 on top
-  const after = await migrate({ connectionString: db.migrator, allowContract: contractVersions() });
-  expect(after.applied).toEqual(['0017']);
+  // now 0017 (and the ordinary 0018) on top; the 0019 contract step stays deferred (it has its own test file)
+  const after = await migrate({ connectionString: db.migrator });
+  expect(after.applied).toEqual(['0017', '0018']);
+  expect(after.deferred).toEqual(['0019']);
 }, 180_000);
 
 afterAll(dropAll);

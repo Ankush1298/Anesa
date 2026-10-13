@@ -15,6 +15,7 @@ const APP_TABLES = [
   'departments',
   'designations',
   'employees',
+  'idempotency_keys',
   'number_sequences',
   'organization_settings',
   'organizations',

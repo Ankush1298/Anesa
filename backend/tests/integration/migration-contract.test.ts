@@ -96,6 +96,8 @@ describe('contract gate against a real database', () => {
       '0015',
       '0016',
       '0017',
+      '0018',
+      '0019',
     ]);
     expect(first.blockedBy).toBe('0009');
     expect(await ledgerOf(db)).toEqual(APPLIED_BY_DEFAULT);
@@ -115,6 +117,8 @@ describe('contract gate against a real database', () => {
       '0015',
       '0016',
       '0017',
+      '0018',
+      '0019',
     ]);
     expect(await ledgerOf(db)).toEqual(APPLIED_BY_DEFAULT);
 
@@ -129,8 +133,9 @@ describe('contract gate against a real database', () => {
       '0015',
       '0016',
       '0017',
+      '0018',
     ]);
-    expect(third.deferred).toEqual([]);
+    expect(third.deferred).toEqual(['0019']);
     expect(await constraintNames(db)).toContain('ra_scope_integrity_ck');
   });
 
@@ -183,6 +188,8 @@ describe('contract gate against a real database', () => {
       '0015',
       '0016',
       '0017',
+      '0018',
+      '0019',
     ]);
     const step2 = await migrate({ connectionString: db.migrator, allowContract: ['0009'] });
     expect(step2.applied).toEqual([
@@ -195,6 +202,7 @@ describe('contract gate against a real database', () => {
       '0015',
       '0016',
       '0017',
+      '0018',
     ]);
     expect(await ledgerOf(db)).toEqual([
       ...APPLIED_BY_DEFAULT,
@@ -207,6 +215,7 @@ describe('contract gate against a real database', () => {
       '0015',
       '0016',
       '0017',
+      '0018',
     ]);
     expect(await constraintNames(db)).toContain('ra_scope_integrity_ck');
   });
@@ -336,6 +345,7 @@ describe('migration 0009 on legacy data', () => {
       '0015',
       '0016',
       '0017',
+      '0018',
     ]);
 
     const rows = await sql<{
@@ -383,6 +393,7 @@ describe('migration 0009 on legacy data', () => {
       '0015',
       '0016',
       '0017',
+      '0018',
     ]);
   });
 
@@ -498,6 +509,7 @@ describe('migration 0009: lock_timeout', () => {
       '0015',
       '0016',
       '0017',
+      '0018',
     ]); // nothing was left behind by the timed-out attempt
   });
 });
@@ -629,6 +641,7 @@ $inj$;
       '0015',
       '0016',
       '0017',
+      '0018',
     ]);
   });
 });
@@ -722,6 +735,7 @@ describe('empty-ledger exemption: only a genuinely fresh database can be built i
       '0015',
       '0016',
       '0017',
+      '0018',
     ]);
     const rows = await ledgerRows(db);
     const baseline = await objects(db);

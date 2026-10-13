@@ -13,6 +13,7 @@ import { AuthRepository } from './modules/auth/auth.repository.js';
 import { registerOrganizationRoutes } from './modules/organization/organization.routes.js';
 import { registerAcademicsRoutes } from './modules/academics/academic.routes.js';
 import { registerPeopleRoutes } from './modules/people/employee.routes.js';
+import { registerStudentRoutes } from './modules/students/student.routes.js';
 import type { Database } from './shared/database/index.js';
 import { PERMISSION_CODES } from './shared/authorization/catalog.js';
 
@@ -92,6 +93,7 @@ export function buildApp(deps: AppDeps): FastifyInstance {
   app.register(registerOrganizationRoutes, { prefix: '/api/v1/organization', db: deps.db });
   app.register(registerAcademicsRoutes, { prefix: '/api/v1/academics', db: deps.db });
   app.register(registerPeopleRoutes, { prefix: '/api/v1/faculty', db: deps.db });
+  app.register(registerStudentRoutes, { prefix: '/api/v1/students', db: deps.db });
 
   return app;
 }

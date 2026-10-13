@@ -146,6 +146,31 @@ describe('employee routes: authentication, CSRF and validation', () => {
     expect(r.statusCode).toBe(400);
   });
 
+  it('the shared validation helpers keep the established employee messages (regression for the extraction)', async () => {
+    const message = (r: { json: <T>() => T }): string =>
+      r.json<{ error: { message: string } }>().error.message;
+    const badDate = await create('orgAdminA', LOCK_A, 'RT-BAD', { joiningDate: '2024-02-30' });
+    expect(badDate.statusCode).toBe(400);
+    expect(message(badDate)).toBe(
+      'joiningDate must be a real calendar date (YYYY-MM-DD) between 1900 and 2200.',
+    );
+    // five spaces pass the schema's length check and are rejected by the service after trimming
+    const blank = await create('orgAdminA', LOCK_A, 'RT-BAD', { reason: '     ' });
+    expect(blank.statusCode).toBe(400);
+    expect(message(blank)).toBe('Reason must be 5 to 500 characters.');
+    const badLeaving = await send(
+      'PATCH',
+      'orgAdminA',
+      `${BASE}/${lockEmployeeId}`,
+      { leavingDate: '2023-13-01', reason: 'Correcting the record' },
+      { ifMatch: '"1"' },
+    );
+    expect(badLeaving.statusCode).toBe(400);
+    expect(message(badLeaving)).toBe(
+      'leavingDate must be a real calendar date (YYYY-MM-DD) between 1900 and 2200.',
+    );
+  });
+
   it('400 for a malformed id and an empty PATCH', async () => {
     expect((await get('orgAdminA', `${BASE}/not-a-uuid`)).statusCode).toBe(400);
     const r = await send(

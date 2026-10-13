@@ -124,12 +124,16 @@ describe('migrations 0008 / 0009: hygiene (same bar as 0007)', () => {
     expect(sql0009).toMatch(/SET search_path = pg_catalog/);
   });
 
-  it('only migration 0009 is a contract migration, it is named and documented as one', () => {
+  it('only migrations 0009 and 0019 are contract migrations, each named and documented as one', () => {
     const names = readdirSync(resolve(root, 'database/migrations')).filter((f) =>
       f.endsWith('_contract.sql'),
     );
-    expect(names).toEqual(['0009_role_scope_integrity_contract.sql']);
+    expect(names).toEqual([
+      '0009_role_scope_integrity_contract.sql',
+      '0019_students_required_dates_contract.sql',
+    ]);
     expect(read(`database/migrations/${names[0]}`)).toMatch(/--allow-contract 0009/);
+    expect(read(`database/migrations/${names[1]}`)).toMatch(/--allow-contract 0019/);
   });
 });
 
@@ -159,9 +163,11 @@ describe('contract gate: no code path authorises a contract migration implicitly
     const tests = code('tests').filter((f) => /allowContract|contractVersions/.test(f.text));
     expect(tests.map((f) => f.path).sort()).toEqual([
       'tests/integration/migration-0017.test.ts',
+      'tests/integration/migration-0019.test.ts',
       'tests/integration/migration-contract.test.ts',
       'tests/integration/migrations.test.ts',
       'tests/integration/person-record-exclusivity.test.ts',
+      'tests/integration/student-atomicity.test.ts',
       'tests/security/academic-structure-static.test.ts',
       'tests/support/global-db.ts',
       'tests/unit/migrate-plan.test.ts',
