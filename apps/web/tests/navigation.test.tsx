@@ -1,4 +1,4 @@
-import { screen, within } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { axe } from 'vitest-axe';
 import { describe, expect, it } from 'vitest';
@@ -56,7 +56,7 @@ describe('role-based navigation comes from backend-derived identity', () => {
     await open(STUDENT, '/access');
     expect(screen.getByRole('heading', { name: 'Access restricted' })).toBeInTheDocument();
     expect(screen.queryByText('Not yet available')).not.toBeInTheDocument();
-    expect(document.title).toBe('Access restricted · Anesa');
+    await waitFor(() => expect(document.title).toBe('Access restricted · Anesa'));
   });
 
   it('an administrator can open the admin placeholder, clearly labelled as not yet available', async () => {
@@ -71,7 +71,7 @@ describe('states and routes', () => {
     await open(STUDENT, '/no/such/page');
     expect(screen.getByRole('heading', { name: 'Page not found' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Go to home' })).toHaveAttribute('href', '/');
-    expect(document.title).toBe('Page not found · Anesa');
+    await waitFor(() => expect(document.title).toBe('Page not found · Anesa'));
   });
 
   it('shows no invented data: placeholders are labelled and contain no numbers', async () => {

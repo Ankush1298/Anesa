@@ -1,4 +1,4 @@
-import { screen, within } from '@testing-library/react';
+import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 import { createFakeBackend, STUDENT } from './helpers/fakeBackend';
@@ -30,7 +30,8 @@ describe('login', () => {
       password: PW,
     });
     expect(b.callsTo('GET', '/auth/me').length).toBeGreaterThanOrEqual(1);
-    expect(document.title).toBe('Student home · Anesa');
+    // the title is set in an effect (usePageTitle), after the heading is already in the DOM
+    await waitFor(() => expect(document.title).toBe('Student home · Anesa'));
   });
 
   it('sends the optional organisation code only when entered', async () => {
