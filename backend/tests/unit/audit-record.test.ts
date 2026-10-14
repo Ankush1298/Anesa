@@ -220,6 +220,39 @@ describe('recordAudit: what is persisted and what is refused', () => {
   });
 });
 
+describe('recordAudit: database timeouts', () => {
+  const failing = (code: string) =>
+    ({
+      query: () =>
+        Promise.reject(
+          Object.assign(
+            new Error('canceling statement due to lock timeout: relation "audit_events_2026_10"'),
+            { code },
+          ),
+        ),
+    }) as never;
+
+  it.each(['55P03', '57014'])(
+    'SQLSTATE %s is a retry-safe 503 DATABASE_BUSY (still thrown, never swallowed, no detail)',
+    async (code) => {
+      const e = await err(recordAudit(failing(code), ctx, base));
+      expect(e.statusCode).toBe(503);
+      expect(e.code).toBe('DATABASE_BUSY');
+      expect(e.message).toBe('The service is busy. Retry the request.');
+      expect(JSON.stringify(e.message)).not.toMatch(/audit_events|relation|lock/);
+    },
+  );
+
+  it.each(['23505', '40P01', '42501', '23502'])(
+    'SQLSTATE %s stays the generic AUDIT_WRITE_FAILED 500',
+    async (code) => {
+      const e = await err(recordAudit(failing(code), ctx, base));
+      expect(e.statusCode).toBe(500);
+      expect(e.code).toBe('AUDIT_WRITE_FAILED');
+    },
+  );
+});
+
 describe('role-change reason', () => {
   it.each([
     undefined,

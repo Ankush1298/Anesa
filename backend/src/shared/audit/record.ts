@@ -1,5 +1,5 @@
 import { isIP } from 'node:net';
-import { AppError } from '../errors/http-errors.js';
+import { AppError, databaseBusy, isDatabaseTimeout } from '../errors/http-errors.js';
 import type { TenantTx } from '../database/tenant-tx.js';
 import { isUuidV7, uuidv7 } from '../ids/uuidv7.js';
 import { isTrustedContext, type TrustedContext } from '../tenancy/trusted-context.js';
@@ -137,9 +137,13 @@ export async function recordAudit(
                $15::jsonb, $16, $17, $18::jsonb)`,
       params,
     );
-  } catch {
-    // Includes "no partition of relation found for row" and any RLS/constraint failure. No driver
-    // detail leaves this function; the caller's transaction is already doomed and will roll back.
+  } catch (err) {
+    // Still ALWAYS a throw: the business write never commits without its audit record. The one distinction kept is a
+    // lock/statement timeout (55P03 / 57014): the same retry-safe 503 every other timeout gets, instead of an opaque
+    // 500, because the whole transaction rolls back and nothing was written. No driver detail leaves this function.
+    if (isDatabaseTimeout(err)) throw databaseBusy();
+    // Includes "no partition of relation found for row" and any RLS/constraint failure; the caller's transaction is
+    // already doomed and will roll back.
     throw new AppError(500, 'AUDIT_WRITE_FAILED', 'The audit record could not be written.');
   }
   return id;

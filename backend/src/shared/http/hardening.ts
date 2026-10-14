@@ -1,6 +1,12 @@
 import type { FastifyError, FastifyInstance } from 'fastify';
 import { ZodError } from 'zod';
-import { AppError, RESOURCE_NOT_FOUND_MESSAGE, envelope } from '../errors/http-errors.js';
+import {
+  AppError,
+  RESOURCE_NOT_FOUND_MESSAGE,
+  databaseBusy,
+  envelope,
+  isDatabaseTimeout,
+} from '../errors/http-errors.js';
 
 /**
  * Baseline HTTP hardening shared by every route:
@@ -40,6 +46,14 @@ export function registerHardening(app: FastifyInstance, opts: { production: bool
           err.issues.map((i) => ({ field: i.path.join('.'), message: i.message })),
         ),
       );
+      return;
+    }
+    if (isDatabaseTimeout(err)) {
+      // A lock or statement timeout outside the idempotency helper (close, the structure guards, any other route): the
+      // transaction already rolled back, so the client may retry. Fixed text; the driver's message stays in the log.
+      req.log.warn({ err }, 'database timeout');
+      const busy = databaseBusy();
+      void reply.status(busy.statusCode).send(envelope(req.id, busy.code, busy.message));
       return;
     }
     const status = typeof err.statusCode === 'number' ? err.statusCode : 500;

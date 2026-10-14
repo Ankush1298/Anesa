@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { TenantTx } from '../database/tenant-tx.js';
-import { AppError } from '../errors/http-errors.js';
+import { AppError, databaseBusy } from '../errors/http-errors.js';
 import { isTrustedContext, type TrustedContext } from '../tenancy/trusted-context.js';
 
 /**
@@ -101,7 +101,7 @@ function timeoutError(err: unknown, claiming: boolean): AppError | undefined {
     );
   }
   if (code === '55P03' || code === '57014') {
-    return new AppError(503, 'DATABASE_BUSY', 'The service is busy. Retry the request.');
+    return databaseBusy();
   }
   return undefined;
 }
