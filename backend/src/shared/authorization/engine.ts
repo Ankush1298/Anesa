@@ -158,6 +158,19 @@ export class AuthorizationEngine {
   }
 
   /**
+   * Staff-only gate for a service whose query must never run for any other actor kind (for example one that relies on
+   * row security hiding rows from non-staff, where "no rows visible" would otherwise read as "nothing exists"). Fail
+   * closed: anything but STAFF, including a kind added to ActorKind later, is a 403. Not a permission check and not a
+   * substitute for `assert`; it makes no query and takes no scope.
+   */
+  static assertStaffActor(ctx: TrustedContext): void {
+    if (!isTrustedContext(ctx)) {
+      throw new AppError(500, 'UNTRUSTED_CONTEXT', 'Database access requires a trusted context.');
+    }
+    if (ctx.actorKind !== 'STAFF') throw new AppError(403, 'FORBIDDEN', 'Access denied.');
+  }
+
+  /**
    * Throws unless the actor may exercise `permission` on `resource`.
    *  - no resource (collection / action endpoint): 403 FORBIDDEN when the permission is not held.
    *  - with a resource: not held OR out of scope ⇒ the same 404 as a non-existent resource.

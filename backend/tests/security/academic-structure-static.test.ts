@@ -136,6 +136,59 @@ describe('migrations 0008 / 0009: hygiene (same bar as 0007)', () => {
     expect(read(`database/migrations/${names[1]}`)).toMatch(/--allow-contract 0019/);
   });
 
+  it('0021 (student programs) is NOT a contract migration; it documents that the runner defers it behind 0019, and the permission dependency left for the next step', () => {
+    const name = readdirSync(resolve(root, 'database/migrations')).find((f) =>
+      f.startsWith('0021'),
+    );
+    expect(name).toBe('0021_student_programs.sql');
+    const text = read(`database/migrations/${name}`);
+    expect(text).toMatch(/ROLLOUT:/);
+    expect(text).toMatch(/runs only after 0019/);
+    // The permission row is deliberately NOT registered here (it must ship with catalog.ts and the role matrix).
+    expect(text.replace(/--[^\n]*/g, '')).not.toMatch(/platform\.permissions/);
+    expect(text).toMatch(/student\.program\.assign/);
+  });
+
+  it('0023 (student.directory.search) is NOT a contract migration; it only upserts the permission row and documents the seeding order and the rollout gate', () => {
+    const name = readdirSync(resolve(root, 'database/migrations')).find((f) =>
+      f.startsWith('0023'),
+    );
+    expect(name).toBe('0023_student_directory_search_permission.sql');
+    const text = read(`database/migrations/${name}`);
+    const code = text.replace(/--[^\n]*/g, '');
+    expect(text).toMatch(/ROLLOUT:/);
+    expect(text).toMatch(/runs only after 0019/);
+    expect(text).toMatch(/seedTenantRoles/);
+    expect(code).toMatch(/INSERT INTO platform\.permissions/);
+    expect(code).toMatch(/ON CONFLICT \(code\) DO UPDATE SET sensitivity = EXCLUDED\.sensitivity/);
+    expect(code).toMatch(/'student\.directory\.search', 'SENSITIVE'/);
+    // nothing but the registration: no DDL, no role grants (those are seeded from ROLE_MATRIX per tenant)
+    expect(code.replace(/DO UPDATE SET/, '')).not.toMatch(
+      /\b(CREATE|ALTER|DROP|GRANT|DELETE|UPDATE)\b/i,
+    );
+    expect(code).not.toMatch(/role_permissions/);
+  });
+
+  it('0022 (student.program.assign) is NOT a contract migration; it only upserts the permission row and documents the seeding order and the rollout gate', () => {
+    const name = readdirSync(resolve(root, 'database/migrations')).find((f) =>
+      f.startsWith('0022'),
+    );
+    expect(name).toBe('0022_student_program_assign_permission.sql');
+    const text = read(`database/migrations/${name}`);
+    const code = text.replace(/--[^\n]*/g, '');
+    expect(text).toMatch(/ROLLOUT:/);
+    expect(text).toMatch(/runs only after 0019/);
+    expect(text).toMatch(/seedTenantRoles/);
+    expect(code).toMatch(/INSERT INTO platform\.permissions/);
+    expect(code).toMatch(/ON CONFLICT \(code\) DO UPDATE SET sensitivity = EXCLUDED\.sensitivity/);
+    expect(code).toMatch(/'student\.program\.assign', 'SENSITIVE'/);
+    // nothing but the registration: no DDL, no role grants (those are seeded from ROLE_MATRIX per tenant)
+    expect(code.replace(/DO UPDATE SET/, '')).not.toMatch(
+      /\b(CREATE|ALTER|DROP|GRANT|DELETE|UPDATE)\b/i,
+    );
+    expect(code).not.toMatch(/role_permissions/);
+  });
+
   it('0020 (person-identity backstop) is NOT a contract migration; it documents that the runner defers it behind 0019 and that the backstop is inactive until then', () => {
     const name = readdirSync(resolve(root, 'database/migrations')).find((f) =>
       f.startsWith('0020'),

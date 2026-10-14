@@ -182,6 +182,24 @@ describe('students: schema shape after the expand (0017) and contract (0019) ste
   });
 });
 
+describe('student.directory.search (0023)', () => {
+  it('is registered as SENSITIVE', async () => {
+    const p = await adminQuery(
+      "SELECT code, sensitivity FROM platform.permissions WHERE code = 'student.directory.search'",
+    );
+    expect(p).toEqual([{ code: 'student.directory.search', sensitivity: 'SENSITIVE' }]);
+  });
+});
+
+describe('student.program.assign (0022)', () => {
+  it('is registered as SENSITIVE', async () => {
+    const p = await adminQuery(
+      "SELECT code, sensitivity FROM platform.permissions WHERE code = 'student.program.assign'",
+    );
+    expect(p).toEqual([{ code: 'student.program.assign', sensitivity: 'SENSITIVE' }]);
+  });
+});
+
 describe('students: policy set (0017)', () => {
   it('adds one RESTRICTIVE UPDATE policy for app_runtime and leaves the permissive set and the self policy intact', async () => {
     const pol = await adminQuery<{

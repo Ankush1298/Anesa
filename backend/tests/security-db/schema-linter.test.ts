@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest';
 import { adminQuery } from '../support/db-harness.js';
 
 // S-2: catalog-level lint. Any new table must satisfy these automatically or CI fails.
-const STUDENT_BEARING = ['students', 'student_guardians'];
+const STUDENT_BEARING = [
+  'students',
+  'student_guardians',
+  'student_programs',
+  'student_program_events',
+];
 
 describe('schema linter (S-2)', () => {
   it('there are no relations in public and no tenant tables outside app', async () => {
@@ -186,6 +191,8 @@ describe('schema linter (S-2)', () => {
       'role_permissions',
       'roles',
       'student_guardians',
+      'student_program_events',
+      'student_programs',
       'students',
       'users',
     ]);

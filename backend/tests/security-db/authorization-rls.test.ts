@@ -128,7 +128,7 @@ describe('authorization tables: runtime privileges are least-privilege', () => {
   });
 
   it('the permission catalog is readable but not writable by the runtime role', async () => {
-    expect((await runAs(CTX.studentA, 'SELECT code FROM platform.permissions')).rowCount).toBe(19);
+    expect((await runAs(CTX.studentA, 'SELECT code FROM platform.permissions')).rowCount).toBe(21);
     for (const sql of [
       `INSERT INTO platform.permissions (code, sensitivity) VALUES ('x.y.z', 'NORMAL')`,
       `UPDATE platform.permissions SET sensitivity = 'NORMAL'`,
@@ -328,7 +328,11 @@ describe('no accidental probe or debug objects', () => {
       'enforce_student_staff_role_exclusive_on_student',
       'get_identity_memberships',
       'reject_audit_mutation',
+      'reject_student_program_event_mutation',
       'role_assignments_guard',
+      'student_program_events_guard',
+      'student_programs_guard',
+      'student_programs_open_guard',
       'students_guard',
       'touch_row',
     ]);

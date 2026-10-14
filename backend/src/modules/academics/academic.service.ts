@@ -791,6 +791,25 @@ export class CohortService {
 
     if (Object.keys(changes).length === 0) return;
 
+    // A cohort that still has an ACTIVE student enrolment must stay ACTIVE: the enrolment service share-locks the cohort
+    // (the migration 0021 guard does too) and requires it ACTIVE. This runs after our FOR NO KEY UPDATE lock on the
+    // cohort, so it either waits for an opening transaction and sees its committed row (READ COMMITTED: fresh snapshot per
+    // statement) or the opener's recheck sees the new status. A plain read, no lock above the cohort is requested.
+    if (row.status === 'ACTIVE' && finalStatus !== 'ACTIVE') {
+      const enrolled = await tx.query(
+        `SELECT 1 FROM app.student_programs
+          WHERE organization_id = $1 AND cohort_id = $2 AND status = 'ACTIVE' LIMIT 1`,
+        [ctx.tenantId, cohortId],
+      );
+      if ((enrolled.rowCount ?? 0) > 0) {
+        throw new AppError(
+          409,
+          'CONFLICT',
+          'Cannot close or graduate a cohort that has active student enrolments.',
+        );
+      }
+    }
+
     await tx.query(
       `UPDATE app.cohorts
           SET name = $3, regulation = $4, expected_graduation_year = $5, status = $6

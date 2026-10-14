@@ -712,8 +712,8 @@ describe('GET /students/:id', () => {
     expect((await get('admin', `${BASE}/${uuidv7()}`)).statusCode).toBe(404);
   });
 
-  it('there is no list, PATCH or DELETE route yet', async () => {
-    expect((await get('admin', BASE)).statusCode).toBe(404);
+  it('there is no list, PATCH or DELETE route yet (a bare GET is the admission-number lookup and needs its parameter)', async () => {
+    expect((await get('admin', BASE)).statusCode).toBe(400);
     for (const method of ['PATCH', 'PUT', 'DELETE'] as const) {
       const r = await app.inject({
         method,

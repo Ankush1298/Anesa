@@ -82,12 +82,16 @@ describe('Students: exactly one source file writes app.students (the audited ser
     }
   });
 
-  it('the student routes expose exactly POST / and GET /:id (no list, PATCH, DELETE or status route yet)', () => {
+  it('the student routes expose exactly POST /, GET / (admission-number lookup), GET /:id and the two program-enrolment POSTs (no list, PATCH, DELETE or status route yet)', () => {
     const text = readFileSync(join(backend, 'src/modules/students/student.routes.ts'), 'utf8');
     const verbs = [...text.matchAll(/app\.(get|post|put|patch|delete)</g)].map((m) => m[1]);
-    expect(verbs.sort()).toEqual(['get', 'post']);
+    expect(verbs.sort()).toEqual(['get', 'get', 'post', 'post', 'post']);
+    const paths = [...text.matchAll(/^\s+'(\/[^']*)',$/gm)].map((m) => m[1]);
+    expect(paths.sort()).toEqual(['/', '/', '/:id', '/:id/programs', '/:id/programs/:pid/close']);
     expect(text).toMatch(/permission: 'student\.record\.create'/);
     expect(text).toMatch(/permission: 'student\.profile\.read'/);
+    expect(text.match(/permission: 'student\.program\.assign'/g)).toHaveLength(2);
+    expect(text).toMatch(/permission: 'student\.directory\.search'/);
   });
 });
 

@@ -39,11 +39,11 @@ describe('the rollout boundary', () => {
     await migrate({ connectionString: db.migrator }); // 0001-0008
     const step = await migrate({ connectionString: db.migrator, allowContract: ['0009'] });
     expect(step.applied.at(-1)).toBe('0018');
-    expect(step.deferred).toEqual(['0019', '0020']);
+    expect(step.deferred).toEqual(['0019', '0020', '0021', '0022', '0023']);
     expect(step.blockedBy).toBe('0019');
     const again = await migrate({ connectionString: db.migrator, allowContract: ['0009'] });
     expect(again.applied).toEqual([]);
-    expect(again.deferred).toEqual(['0019', '0020']);
+    expect(again.deferred).toEqual(['0019', '0020', '0021', '0022', '0023']);
     expect(await triggersOf(db.admin)).toEqual([]);
     expect(await ledgerOf(db.admin)).not.toContain('0020');
   }, 180_000);
@@ -53,24 +53,31 @@ describe('the rollout boundary', () => {
     await migrate({ connectionString: db.migrator });
     await migrate({ connectionString: db.migrator, allowContract: ['0009'] });
     const last = await migrate({ connectionString: db.migrator, allowContract: ['0019'] });
-    expect(last.applied).toEqual(['0019', '0020']);
+    expect(last.applied).toEqual(['0019', '0020', '0021', '0022', '0023']);
     expect(last.deferred).toEqual([]);
-    expect((await ledgerOf(db.admin)).slice(-3)).toEqual(['0018', '0019', '0020']);
+    expect((await ledgerOf(db.admin)).slice(-6)).toEqual([
+      '0018',
+      '0019',
+      '0020',
+      '0021',
+      '0022',
+      '0023',
+    ]);
     expect(await triggersOf(db.admin)).toEqual(TRIGGERS);
     const noop = await migrate({ connectionString: db.migrator, allowContract: ['0019'] });
     expect(noop.applied).toEqual([]);
   }, 180_000);
 
-  it('with 0019 already in the ledger, a plain `db:migrate` (no flags) applies 0020 by itself', async () => {
+  it('with 0019 already in the ledger, a plain `db:migrate` (no flags) applies 0020, 0021, 0022 and 0023', async () => {
     const db = await freshDatabase();
     const dir = mkdtempSync(join(tmpdir(), 'campusos-mig20-'));
-    for (const f of readdirSync(DEFAULT_MIGRATIONS_DIR).filter((x) => !x.startsWith('0020'))) {
+    for (const f of readdirSync(DEFAULT_MIGRATIONS_DIR).filter((x) => Number(x.slice(0, 4)) < 20)) {
       cpSync(join(DEFAULT_MIGRATIONS_DIR, f), join(dir, f));
     }
     await migrate({ connectionString: db.migrator, dir, allowContract: ['0009', '0019'] });
     expect(await triggersOf(db.admin)).toEqual([]);
     const plain = await migrate({ connectionString: db.migrator });
-    expect(plain.applied).toEqual(['0020']);
+    expect(plain.applied).toEqual(['0020', '0021', '0022', '0023']);
     expect(plain.deferred).toEqual([]);
     expect(await triggersOf(db.admin)).toEqual(TRIGGERS);
   }, 180_000);

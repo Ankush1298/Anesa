@@ -102,4 +102,35 @@ describe('permission catalog and role matrix equal docs/architecture/v3/10', () 
       if (perms['role.assignment.grant']) expect(GRANT_RULES[role], role).toBeDefined();
     }
   });
+
+  it('student.program.assign: SENSITIVE, GRANTED to exactly DEPARTMENT_ADMIN, CAMPUS_ADMIN, COLLEGE_ADMIN and REGISTRAR with their scope types', () => {
+    expect(PERMISSION_CATALOG.find((p) => p.code === 'student.program.assign')).toEqual({
+      code: 'student.program.assign',
+      sensitivity: 'SENSITIVE',
+    });
+    const holders = ROLE_CODES.filter((r) => ROLE_MATRIX[r]['student.program.assign']);
+    expect([...holders].sort()).toEqual(
+      ['CAMPUS_ADMIN', 'COLLEGE_ADMIN', 'DEPARTMENT_ADMIN', 'REGISTRAR'].sort(),
+    );
+    for (const r of holders) expect(ROLE_MATRIX[r]['student.program.assign']).toBe('GRANTED');
+    expect(ROLE_SCOPE_TYPES.DEPARTMENT_ADMIN).toEqual(['DEPARTMENT']);
+    expect(ROLE_SCOPE_TYPES.CAMPUS_ADMIN).toEqual(['CAMPUS']);
+    expect(ROLE_SCOPE_TYPES.COLLEGE_ADMIN).toEqual(['ORGANIZATION']);
+    expect(ROLE_SCOPE_TYPES.REGISTRAR).toEqual(['ORGANIZATION', 'CAMPUS']);
+  });
+
+  it('student.directory.search: SENSITIVE, GRANTED to exactly HOD, DEPARTMENT_ADMIN, CAMPUS_ADMIN, COLLEGE_ADMIN and REGISTRAR', () => {
+    expect(PERMISSION_CATALOG.find((p) => p.code === 'student.directory.search')).toEqual({
+      code: 'student.directory.search',
+      sensitivity: 'SENSITIVE',
+    });
+    const holders = ROLE_CODES.filter((r) => ROLE_MATRIX[r]['student.directory.search']);
+    expect([...holders].sort()).toEqual(
+      ['CAMPUS_ADMIN', 'COLLEGE_ADMIN', 'DEPARTMENT_ADMIN', 'HOD', 'REGISTRAR'].sort(),
+    );
+    for (const r of holders) expect(ROLE_MATRIX[r]['student.directory.search']).toBe('GRANTED');
+    for (const r of ['STUDENT', 'FACULTY', 'STAFF'] as const) {
+      expect(ROLE_MATRIX[r]['student.directory.search']).toBeUndefined();
+    }
+  });
 });

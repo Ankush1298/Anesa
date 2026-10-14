@@ -53,6 +53,35 @@ function invalid(message: string): AppError {
 }
 
 /**
+ * A department that still has an ACTIVE student enrolment (app.student_programs, frozen department_id) must stay active:
+ * the enrolment service share-locks the department row and requires it ACTIVE, so this check, run AFTER the caller took
+ * its FOR NO KEY UPDATE lock, either waits for an opening transaction and sees its committed row (READ COMMITTED gives
+ * each statement a fresh snapshot) or runs first and makes the opener's recheck find an inactive department. A plain
+ * read: it takes no row lock, so no lock above the department is ever requested after it (lock order campus ->
+ * department -> program -> cohort is preserved).
+ */
+async function assertNoActiveEnrolments(
+  tx: TenantTx,
+  ctx: TrustedContext,
+  departmentId: string,
+  what: 'deactivate' | 'delete',
+): Promise<void> {
+  const active = await tx.query(
+    `SELECT 1 FROM app.student_programs
+      WHERE organization_id = $1 AND department_id = $2 AND status = 'ACTIVE'
+      LIMIT 1`,
+    [ctx.tenantId, departmentId],
+  );
+  if ((active.rowCount ?? 0) > 0) {
+    throw new AppError(
+      409,
+      'CONFLICT',
+      `Cannot ${what} a department that has active student enrolments.`,
+    );
+  }
+}
+
+/**
  * Manages departments. All mutating operations occur inside the caller's tenant transaction (`tx`),
  * ensuring the row change and its audit event commit or roll back atomically.
  *
@@ -285,6 +314,9 @@ export class DepartmentService {
         );
       }
     }
+    if (input.status === 'INACTIVE' && lockedRow.status === 'ACTIVE') {
+      await assertNoActiveEnrolments(tx, ctx, departmentId, 'deactivate');
+    }
 
     const finalName = newName ?? lockedRow.name;
     const finalStatus = input.status ?? lockedRow.status;
@@ -404,6 +436,7 @@ export class DepartmentService {
         'Cannot delete a department that has active child departments.',
       );
     }
+    await assertNoActiveEnrolments(tx, ctx, departmentId, 'delete');
 
     await tx.query(
       `UPDATE app.departments

@@ -87,3 +87,95 @@ export const GetStudentResponseSchema = Type.Object(
   { success: Type.Literal(true), data: StudentRecordSchema },
   { additionalProperties: false },
 );
+
+/**
+ * Program enrolment (Phase 3a). The caller supplies ONLY the program, cohort, start date and reason: campus, department,
+ * organization, entry type and previous-enrolment are server-derived or fixed, so any such field is a 400
+ * (additionalProperties: false). The service re-validates every value (trimming, calendar dates, the 5-500 reason).
+ */
+export const OpenStudentProgramBodySchema = Type.Object(
+  { programId: UuidV7Schema, cohortId: UuidV7Schema, startDate: DateSchema, reason: ReasonSchema },
+  { additionalProperties: false },
+);
+export type OpenStudentProgramBody = Static<typeof OpenStudentProgramBodySchema>;
+
+export const StudentProgramParamsSchema = Type.Object(
+  { id: UuidV7Schema, pid: UuidV7Schema },
+  { additionalProperties: false },
+);
+export type StudentProgramParams = Static<typeof StudentProgramParamsSchema>;
+
+export const CloseStudentProgramBodySchema = Type.Object(
+  {
+    outcome: Type.Union([
+      Type.Literal('COMPLETED'),
+      Type.Literal('TRANSFERRED_OUT'),
+      Type.Literal('DISCONTINUED'),
+    ]),
+    endDate: DateSchema,
+    reason: ReasonSchema,
+  },
+  { additionalProperties: false },
+);
+export type CloseStudentProgramBody = Static<typeof CloseStudentProgramBodySchema>;
+
+export const StudentProgramRecordSchema = Type.Object(
+  {
+    id: UuidV7Schema,
+    studentId: UuidV7Schema,
+    programId: UuidV7Schema,
+    cohortId: UuidV7Schema,
+    campusId: UuidV7Schema,
+    departmentId: UuidV7Schema,
+    startDate: Type.String(),
+    endDate: Type.Union([Type.String(), Type.Null()]),
+    status: Type.String(),
+    entryType: Type.String(),
+    exitReason: Type.Union([Type.String(), Type.Null()]),
+    version: Type.Integer({ minimum: 1 }),
+    createdAt: Type.String(),
+    updatedAt: Type.String(),
+  },
+  { additionalProperties: false },
+);
+export const OpenStudentProgramResponseSchema = CreateStudentResponseSchema;
+export const CloseStudentProgramResponseSchema = Type.Object(
+  { success: Type.Literal(true), data: StudentProgramRecordSchema },
+  { additionalProperties: false },
+);
+
+/**
+ * Student lookup by exact admission number (docs/architecture/v3/21-students.md §0b). No other parameter exists: no
+ * name search, no listing, no limit/offset/cursor, no tenant or scope field (additionalProperties: false).
+ */
+export const StudentLookupQuerySchema = Type.Object(
+  {
+    admissionNumber: Type.String({
+      minLength: 1,
+      maxLength: 50,
+      pattern: ADMISSION_NUMBER_PATTERN,
+    }),
+  },
+  { additionalProperties: false },
+);
+export type StudentLookupQuery = Static<typeof StudentLookupQuerySchema>;
+
+/**
+ * The reviewed selection DTO: exactly these five fields. Never the admission date, account id, e-mail, guardians,
+ * placement (campus, department, program, cohort), enrolment history, exit reasons or event reasons.
+ */
+export const StudentDirectoryEntrySchema = Type.Object(
+  {
+    id: UuidV7Schema,
+    admissionNumber: Type.String(),
+    displayName: Type.String(),
+    status: StudentStatusSchema,
+    hasActiveEnrolment: Type.Boolean(),
+  },
+  { additionalProperties: false },
+);
+export type StudentDirectoryEntry = Static<typeof StudentDirectoryEntrySchema>;
+export const StudentLookupResponseSchema = Type.Object(
+  { success: Type.Literal(true), data: StudentDirectoryEntrySchema },
+  { additionalProperties: false },
+);

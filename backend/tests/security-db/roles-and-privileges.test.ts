@@ -27,6 +27,8 @@ const APP_TABLES = [
   'users',
   'students',
   'student_guardians',
+  'student_programs',
+  'student_program_events',
 ];
 
 describe('real PostgreSQL 16 server', () => {

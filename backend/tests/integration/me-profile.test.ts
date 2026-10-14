@@ -95,6 +95,7 @@ describe('GET /auth/me profile', () => {
       'org.structure.read',
       'session.read',
       'session.revoke',
+      'student.directory.search',
       'student.profile.read',
     ]);
   });
