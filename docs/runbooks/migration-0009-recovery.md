@@ -10,6 +10,13 @@ or any persistent database; no migration was run against a persistent or product
 Disposable-database testing and experiments did occur on throw-away databases (section 10). Facts are labelled with how
 they were established (section 2). Every SQL statement here is **read-only**.
 
+**Scope note (migrations added after this guide was written).** The guide analyzes `0009` as the only migration of its
+invocation. With the repository's current files, `pnpm db:migrate --allow-contract 0009` from a ledger of `0001`-`0008`
+applies `0009` **and then `0010`-`0018`**, each in its own transaction, and defers `0019`-`0023` (F4 update, scenario 4;
+`backend/tests/unit/migrate-plan.test.ts`, `backend/tests/integration/migration-contract.test.ts`). The behaviour of
+`0009` itself is unchanged; where this guide says the ledger "holds `0009`" or "a re-run is a no-op", read it with that in
+mind.
+
 **Baseline when written** (before the F2.11 commits): `main` = `origin/main` = `85a9e12` (F2.9; CI run 38057283314 green).
 `0008` and `0009` are unmodified since `a1a6d3f`. SHA-256 of the files at this baseline (the runner stores the same value in
 `platform.schema_migrations.checksum`):
@@ -37,7 +44,7 @@ These hold in every scenario. A proposed step that breaks one is rejected, not w
    ledger that disagrees with the schema is a finding to escalate (scenario 6), not something to adjust.
 5. **An applied migration file is never edited.** The runner treats that as checksum drift and refuses to run.
 6. **A failed client command is not evidence of rollback** (section 3). Establish the outcome from the database.
-7. **No down migration exists** for 0008 or 0009. Do not write "reverse" SQL during an incident.
+7. **No down migration exists** for 0008, 0009 or any later migration. Do not write "reverse" SQL during an incident.
 8. **Decisions are recorded** (section 8) before the next action.
 
 ---
@@ -54,7 +61,7 @@ PostgreSQL documented behaviour, **not** re-verified here; **[unverified]** a st
 | F1  | A migration runs as four separate awaited round-trips: `BEGIN`; the whole file as one multi-statement query; `INSERT` of the ledger row; `COMMIT`. The ledger row and the DDL are in one transaction: they commit or vanish together. `COMMIT` is not sent until the first three have been answered.                                                                                | [code] `migrate.ts`       |
 | F2  | On any error the runner sends `ROLLBACK` and rethrows. If `ROLLBACK` itself fails (dead connection), **its error replaces the original one**; the original cause is lost. The `finally` that releases the advisory lock can fail and mask in the same way.                                                                                                                          | [code]                    |
 | F3  | A run applies every pending migration of its plan in order, each in its own transaction. If a later one fails, earlier ones **stay committed**, and the thrown error does not say so (`result.applied` is only returned on success). Observed at baseline `85a9e12` (before the phase rule): `0007` database, `--allow-contract 0009`, injected failure in 0009 → the only message was the injected one; the ledger held `0001`–`0008`. That exact command is now refused (F4). For ordinary migrations (or on an empty ledger), any run with several pending migrations commits them one by one in the same way. | [code] [exp E6]           |
-| F4  | The contract gate only checks that the operator named `0009`. With ledger `0001`–`0007` and `--allow-contract 0009` the plan is **`0008` then `0009` back-to-back**; at `0001`–`0008` it is `0009`; at `0001`–`0009` it is empty (a re-run is a no-op). The "deploy and drain between 0008 and 0009" step is procedural, not enforced. **Update (F2.11, `planMigrations` in `migrate.ts`):** the description above is the baseline `85a9e12`; on a non-empty ledger where earlier migrations are pending (e.g. ledger `0007`), naming `0009` is now refused by the planner before any migration SQL is sent, enforcing separate invocations (see H1). At ledger `0008`, `0009` is the first migration to run in that invocation, so it is permitted. An empty ledger (brand-new database) is still built in one pass. That exemption was tried against a truncated or missing ledger on a populated database, a schema built by only some migrations, and a lone pre-existing table: each stopped at the first conflicting object and 0009 was not applied (design doc 18; `migration-contract.test.ts`). | [probe] [exp E1] [test] |
+| F4  | The contract gate only checks that the operator named `0009`. With ledger `0001`–`0007` and `--allow-contract 0009` the plan is **`0008` then `0009` back-to-back**; at `0001`–`0008` it is `0009`; at `0001`–`0009` it is empty (a re-run is a no-op). The "deploy and drain between 0008 and 0009" step is procedural, not enforced. **Update (F2.11, `planMigrations` in `migrate.ts`):** the description above is the baseline `85a9e12`; on a non-empty ledger where earlier migrations are pending (e.g. ledger `0007`), naming `0009` is now refused by the planner before any migration SQL is sent, enforcing separate invocations (see H1). At ledger `0008`, `0009` is the first migration to run in that invocation, so it is permitted. An empty ledger (brand-new database) is still built in one pass. That exemption was tried against a truncated or missing ledger on a populated database, a schema built by only some migrations, and a lone pre-existing table: each stopped at the first conflicting object and 0009 was not applied (design doc 18; `migration-contract.test.ts`). **Update (migrations `0010`-`0023` added after F2.11):** with the repository's current files, ledger `0001`-`0008` plus `--allow-contract 0009` plans `0009` **and then `0010`-`0018`** (`0019`-`0023` stay deferred), each in its own transaction (F3); a ledger that stops between `0009` and `0017` still plans the remaining `0010`-`0018` on the next run; only at `0001`-`0018` does it plan nothing. So "a re-run is a no-op" above holds only once `0010`-`0018` are also recorded. | [probe] [exp E1] [test] |
 | F5  | The runner holds a **session-level advisory lock** (key `727301001`) for the whole run, taken with `pg_advisory_lock` and **no timeout**. `app_migrator` has no timeouts set by bootstrap. A second run, or an orphaned one, makes the next run wait indefinitely.                                                                                                                  | [code]                    |
 | F6  | Everything 0009 does is transactional DDL/DML (`SET LOCAL`, `LOCK`, `ALTER TABLE`, `DO`, `UPDATE`, `CREATE OR REPLACE FUNCTION`, `REVOKE`, `ADD/DROP CONSTRAINT`). No `CONCURRENTLY`, no sequence, no `BEGIN`/`COMMIT` in the file (static test). All effects, including the three `NO FORCE`/`FORCE` toggles, roll back together.                                              | [code] [test]             |
 | F7  | Injecting an error at three points inside the real 0009 text (after backfill, after guard replacement, after the constraint swap) and rolling back restores a byte-identical schema state, row data, FORCE RLS flags, ledger and `lock_timeout`; the migration then applies cleanly.                                                                                                | [test] `migration-contract` |
@@ -78,7 +85,7 @@ Use this before drawing any conclusion from what the operator saw.
 
 | What the operator saw                                                                    | What it proves                                                                                                                                                  | What it does **not** prove                                                       |
 | ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
-| Exit `0`, `applied [0009]`                                                               | The server acknowledged `COMMIT`.                                                                                                                               | That the application works, or that replicas have it.                             |
+| Exit `0`, `applied [0009, 0010, ..., 0018]` (the current files; `[0009]` alone only at the F2.11 baseline) | The server acknowledged `COMMIT` of each migration listed.                                                                                                                               | That the application works, or that replicas have it.                             |
 | Non-zero exit with a **server error** (SQLSTATE such as `55P03`, `40P01`, `23xxx`, `P0001`) | The migration SQL failed, so that transaction cannot commit (F12). Locks may be held until the session ends.                                                    | That earlier migrations of the same run did not commit (F3).                      |
 | Non-zero exit with a **connection error** (`Connection terminated`, `ECONNRESET`, timeout) | Nothing about the outcome. It may be the masked result of a failed `ROLLBACK` (F2).                                                                              | Rollback. Commit. Anything.                                                       |
 | Process killed (`SIGKILL`, `Ctrl+C`, container eviction, host loss)                     | The client is gone. If `COMMIT` was not sent, the transaction cannot commit (F12), but the backend may still hold locks and run (F11, F14).                    | That the database is quiet.                                                       |
@@ -136,11 +143,11 @@ SELECT
       AND relrowsecurity AND relforcerowsecurity)                                                    AS tables_force_rls;
 ```
 
-Expected signatures (observed on the runner's own output for each state):
+Expected signatures (S0, S1 and S2 as observed on the runner's own output at the baseline; the `0001`…`0018` ledger value in the S2 column is derived from `migrate-plan.test.ts` and `migration-contract.test.ts` and was **not** re-observed in that experiment):
 
 | Column                | S0: before 0008 | S1: after 0008, before 0009 | S2: after 0009        |
 | --------------------- | --------------- | --------------------------- | --------------------- |
-| `ledger`              | `0001`…`0007`   | `0001`…`0008`               | `0001`…`0009`         |
+| `ledger`              | `0001`…`0007`   | `0001`…`0008`               | `0001`…`0009` at the baseline; `0001`…`0018` with the current files after the whole 0009 invocation |
 | `has_campuses` / `has_departments` | f / f | t / t                    | t / t                 |
 | `typed_columns`       | 0               | 2                           | 2                     |
 | `has_old_check`       | t               | t                           | **f**                 |
@@ -150,7 +157,7 @@ Expected signatures (observed on the runner's own output for each state):
 | `tables_found`        | 1               | 3                           | 3                     |
 | `tables_force_rls`    | 1               | 3                           | 3                     |
 
-**Any other combination is MIXED. Stop** (scenario 6). In particular: `ledger` at `…0009` with `has_new_check = f` is
+**Any other combination is MIXED. Stop** (scenario 6). In particular: a `ledger` containing `0009` with `has_new_check = f` is
 the F10 case that the runner itself would report as success. The signature proves the objects it names; it does not prove
 0008's indexes, policies or grants, and says nothing about row data (O6).
 
@@ -242,7 +249,8 @@ the blocker (`pg_blocking_pids`, O3).
 operator intends the two-step rollout); no `app_migrator` backend and no advisory lock remain (O3, O4); and the drain
 has been **re-attested** (rollout runbook section 7). `55P03` and `40P01` are direct evidence that a writer or long
 transaction is still alive: do not simply retry. Retry the **two-step** way: `pnpm db:migrate` first, confirm S1, deploy
-and drain, then `pnpm db:migrate --allow-contract 0009`.
+and drain, then `pnpm db:migrate --allow-contract 0009` (with the current files this second command applies `0009`-`0018`;
+rollout runbook, section 8).
 
 **Forward fix.** **No.** There is nothing to fix in the schema; a lock failure is operational.
 
@@ -329,6 +337,9 @@ after a "repair"; `post-backfill verification failed` appears at all (the prefli
   run waits forever on the advisory lock (F5).
 - **Loss while `COMMIT` is in flight:** genuinely uncertain. The ledger row and the DDL are one transaction, so the
   **ledger row on the primary is a faithful witness**: present means committed with all effects, absent means none.
+- With the current files the invocation continues after `0009` into `0010`-`0018`, each in its own transaction, so a
+  loss can leave `0009` committed and the ledger stopped anywhere up to `0018`. Each ledger row witnesses its own
+  migration only: read the whole ledger to see how far the run got.
 - The runner's own error is probably a connection error and may be the masked `ROLLBACK` failure (F2); the original cause
   is lost.
 - After a **failover**, the new primary's ledger is the truth; the old primary's commits may be missing (F13).
@@ -342,7 +353,7 @@ rolled back by now" from elapsed time (F14).
 | Observation                                                         | Conclusion                         | Action                                                                                   |
 | ------------------------------------------------------------------- | ---------------------------------- | ---------------------------------------------------------------------------------------- |
 | Orphan backend or advisory lock present                              | Outcome undecided; locks held       | **Do not start another run.** DBO decides: wait for the statement, `pg_cancel_backend`, or `pg_terminate_backend` (cancel released the orphan in F11). Then re-observe. |
-| No backend; ledger has `0009`; O2 = S2                              | Committed                           | **Do not re-run** (a re-run is a no-op, F4). Go to the post-checks, section 9.2 of the rollout runbook; problems → scenario 5. |
+| No backend; ledger has `0009`; O2 = S2                              | Committed                           | **Do not re-run `--allow-contract 0009` to "redo" it:** `0009` is applied and is not planned again. If the ledger stops short of `0018`, a continuing run would apply the remaining `0010`-`0018`; that is a separate DBO/approver decision (rollout runbook, section 8), not a retry of `0009`. Go to the post-checks, section 9.2 of the rollout runbook; problems → scenario 5. |
 | No backend; ledger lacks `0009`; O2 = S1                            | Rolled back                         | Scenario 2 retry rules.                                                                   |
 | Ledger has `0009` but O2 = S1, **or** ledger lacks `0009` but O2 = S2 | Disagreement (should be impossible from the runner, F1) | Scenario 6. Stop.                                              |
 | Cannot determine which node is primary                              | Unknown                             | Stop. DBO.                                                                                |
@@ -391,8 +402,8 @@ SELECT ra.id, ra.organization_id, ra.scope_type, ra.version
 **Observe first.** Error counts by SQLSTATE and by client (O7, O3); O1, O2 (S2); the section 9.2 checks of the rollout
 runbook; which application build and which writer produced the failing statements.
 
-**Retry.** Not applicable: the ledger holds `0009`, and a re-run plans nothing (F4). Do not use `--allow-contract` again
-as a "fix".
+**Retry.** Not applicable: the ledger holds `0009`, so `0009` is not planned again, and a re-run plans nothing once
+`0010`-`0018` are also recorded (F4 update). Do not use `--allow-contract` again as a "fix".
 
 **Forward fix.** **Conditional**, and only within section 7: additive or strictly strengthening changes. 5g is the one
 schema-level case contemplated (replace the guard with a corrected body that rejects a superset of what it rejects now, or
@@ -501,8 +512,10 @@ data repair, revocation or deletion inside a migration; touching the ledger.
 
 **Checklist for any forward fix.**
 
-1. Name and number it as the next version (`0010_…`). **Never edit `0008` or `0009` once either has been applied to
-   any persistent database**; the runner reports checksum drift. Editing is possible only for a migration that no
+1. Name and number it as the next unused version (when this guide was written that was `0010_…`; the repository now
+   holds migrations through `0023`, so check `database/migrations/`). **Never edit `0008`, `0009` or any later migration
+   once it has been applied to any persistent database**; the runner reports checksum drift
+   (`tests/security/migration-immutability.test.ts` pins `0016`-`0023`). Editing is possible only for a migration that no
    persistent environment has applied, and then it is a code change to a not-yet-applied file, decided by the repository
    owner, not by the operator during an incident.
 2. A migration whose name ends in `_contract` is gated by the runner (`--allow-contract`); use that suffix only for a
@@ -566,7 +579,7 @@ validated against production.
 
 **Executed for this document (all without a persistent database):**
 
-- `planMigrations` evaluated against the real migration files with ledgers at 0007, 0008 and 0009 (F4).
+- `planMigrations` evaluated against the real migration files **at baseline `85a9e12`** (which then held `0001`-`0009` only) with ledgers at 0007, 0008 and 0009 (F4). Not re-evaluated against the current files in this experiment; see the F4 update.
 - Throw-away embedded PostgreSQL 16.14 (macOS arm64; random port, temp data directory, deleted afterwards), driven by the
   repository's `startThrowawayPostgres`, `createBootstrappedDatabase` and `migrate`:
   - **E1:** the O2 query in S0, S1, S2 and a hand-made mixed state; a re-run on S2 (no-op); the runner on the mixed

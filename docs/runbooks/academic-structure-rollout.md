@@ -15,7 +15,7 @@ measured**, and no restore procedure has been exercised.
 Companion document: `docs/runbooks/migration-0009-recovery.md` covers what to do when a step fails or its outcome is
 uncertain. It is a design for review, **not** a procedure validated against production.
 
-Later contract migration: `0019_students_required_dates_contract.sql` follows the same gating rules; see `docs/runbooks/students-contract-rollout.md`. The ordinary run described here applies `0001`-`0008`; `--allow-contract 0009` then applies `0009`-`0018` and defers `0019` and `0020`. `0020` (the person-identity database backstop) is applied only after `0019`, so that backstop is inactive until then; see the students runbook §6, which also holds the read-only preflight to run first.
+Later contract migration: `0019_students_required_dates_contract.sql` follows the same gating rules; see `docs/runbooks/students-contract-rollout.md`. The ordinary run described here applies `0001`-`0008` and defers everything from `0009` on. `--allow-contract 0009` does **not** apply `0009` alone: with the migration files in this repository (through `0023`) and a ledger of `0001`-`0008`, it applies `0009` and then `0010`-`0018` in order, each in its own transaction, and defers `0019`-`0023`, leaving the ledger at `0001`-`0018` (`tests/unit/migrate-plan.test.ts`, "ledger at 0008: --allow-contract 0009 runs 0009 through 0018 and defers 0019 to 0023"; `tests/integration/migration-contract.test.ts`, "an ordinary run applies 0001-0008, defers 0009 and stays deferred on every later run" (its last step) and "a database at 0007: --allow-contract 0009 is refused before any migration SQL is sent; the two steps then succeed in order" (its second step), on disposable databases). `0020` (the person-identity database backstop) is applied only after `0019`, so that backstop is inactive until then; see the students runbook §6, which also holds the read-only preflight to run first. Because `0021` is still unapplied after this step, the application build running at that point must not query `app.student_programs` (students runbook §2 item 7).
 
 Nothing here replaces an approved change window. A separate, explicit approval is required before running either
 migration against a persistent database.
@@ -32,6 +32,8 @@ migration against a persistent database.
 The runner applies migrations in file order and never runs a migration whose name ends in `_contract` unless the
 operator names its exact version with `--allow-contract`. An ordinary run applies everything before 0009, stops, and
 reports 0009 as `DEFERRED`.
+
+**What the 0009 invocation applies.** `--allow-contract 0009` runs 0009 first and then every later migration up to (not including) the next deferred contract migration. With this repository's files that is `0009` followed by `0010`-`0018` (organization structure read, designations, organization settings, number sequences, academic programs, employees, student record foundations, idempotency keys), in the same invocation; `0019` onwards stay deferred. This runbook documents and gates 0008 and 0009 only; it contains no analysis or verification queries for `0010`-`0018`.
 
 **Phase boundary.** On an existing database (one whose ledger is not empty) the planner also refuses to run a contract
 migration in the same invocation as any earlier pending migration. With the ledger at `0007`, `pnpm db:migrate
@@ -188,7 +190,8 @@ SELECT version, name, checksum, applied_at, applied_by
  ORDER BY version;
 ```
 
-Expected before 0008: versions `0001` through `0007` only. After 0008: `0001`-`0008`. After 0009: `0001`-`0009`. Anything
+Expected before 0008: versions `0001` through `0007` only. After 0008: `0001`-`0008`. After the `--allow-contract 0009`
+invocation: `0001`-`0018` (0009 is applied together with `0010`-`0018`, section 8; it does not stop at `0009`). Anything
 else, or a version missing from source control, **stop**: the runner will also refuse (`Database has migration ... that is
 missing from source control`). The applied versions must be a contiguous `0001..N`; a gap, for example `0009` recorded
 without `0008`, is refused too (`Migration ledger is not a contiguous prefix ...`), because the runner cannot produce it.
@@ -359,7 +362,9 @@ Naming 0009 here would not skip a step, it would be refused (section 8). The nex
 **Expected outcome**
 
 - `migrate: applied [0008], already applied [0001, 0002, 0003, 0004, 0005, 0006, 0007]`
-- followed by a warning that `0009` is `DEFERRED` and needs `--allow-contract 0009`; "Nothing after it was applied."
+- followed by a warning `migrate: DEFERRED [0009, 0010, ..., 0023]: contract migration 0009 needs explicit authorisation
+  (--allow-contract 0009) AFTER every writer has been upgraded. Nothing after it was applied.` The list names every
+  deferred migration (`0009` through `0023`), not only `0009`.
 - exit code `0`; a ledger row for `0008` (section 9.1).
 
 **Stop conditions**
@@ -427,8 +432,16 @@ planner); whether the schema matches the ledger. These remain the operator's res
 
 **Expected outcome**
 
-- `migrate: applied [0009], already applied [0001, ..., 0008]` and **no** `DEFERRED` warning; exit code `0`.
+- `migrate: applied [0009, 0010, 0011, 0012, 0013, 0014, 0015, 0016, 0017, 0018], already applied [0001, ..., 0008]`
+  followed by a warning `migrate: DEFERRED [0019, 0020, 0021, 0022, 0023]: contract migration 0019 needs explicit
+  authorisation (--allow-contract 0019) AFTER every writer has been upgraded. Nothing after it was applied.`; exit code
+  `0`. The `DEFERRED` warning is expected here: `0019` is the next contract migration and is **not** part of this
+  rollout (students runbook). Do not run `--allow-contract 0019` as part of this runbook.
+- Ledger (5.1) now shows exactly `0001`-`0018`.
 - Section 9 verification passes.
+- `applied` containing anything other than `0009`-`0018` in that order, or a ledger other than `0001`-`0018`, means the
+  repository revision differs from the one this runbook describes: **stop** and compare with
+  `backend/tests/unit/migrate-plan.test.ts` before continuing.
 
 **Stop conditions and what they mean**
 
@@ -444,9 +457,20 @@ planner); whether the schema matches the ledger. These remain the operator's res
 | Usage error (`usage: migrate [--allow-contract ...`)                                 | Argument not understood, for example the `--` spelling.                                                                              | Nothing ran. Fix the command.                                                                                                                                                                   |
 | `allow-contract "..." : no contract migration with that exact version`               | Wrong version.                                                                                                                       | Nothing ran. Use `0009`.                                                                                                                                                                        |
 
-Any failure **before `COMMIT`** rolls the whole file back, including the RLS changes (see section 10). Always confirm with
-the ledger query that `0009` is absent before concluding that nothing changed. A connection error, a killed command or a
+Any failure **before `COMMIT`** rolls back the file that was running, including the RLS changes if it was `0009` (see
+section 10). Each file commits on its own, so what remains depends on where the run stopped: a failure in `0009` leaves
+`0009` absent from the ledger; a failure in one of `0010`-`0018` leaves `0009` (and any earlier of those) **committed
+and recorded**, and the error does not list them. Always confirm with the ledger query which versions are present before
+concluding that nothing changed. A connection error, a killed command or a
 hang proves nothing about the outcome, and a hung command may be waiting on a lock rather than failing (section 10).
+
+**Re-running after a partial run.** A later invocation plans only the migrations that are missing from the ledger; a
+recorded migration is never applied again (`planMigrations` reports it as already applied, and refuses the run only if
+its checksum has changed). The gates still apply: a pending contract migration needs its own `--allow-contract` and, on
+an existing database, must be the first migration of the invocation. Whether to continue after a partial run is a
+procedural decision for the operator and approver, taken only once the cause of the failure is understood; the runner
+does not make or check that decision, it simply plans whatever is missing (`tests/unit/migrate-plan.test.ts`, "ledger at
+0009: runs pending ordinary migrations 0010 through 0018 and defers 0019 to 0023").
 
 ---
 
@@ -477,8 +501,11 @@ At this point `ra_scope_id_check` must **still exist** (0008 keeps it).
 
 ### 9.2 After 0009
 
+These checks verify the effects of `0009` only. The same invocation also applied `0010`-`0018`; this runbook has no
+verification queries for them beyond the ledger.
+
 ```sql
--- READ-ONLY. Ledger: 0009 present, applied_by = app_migrator.
+-- READ-ONLY. Ledger: 0009 through 0018 present (0001-0018 in total), applied_by = app_migrator.
 SELECT version, name, applied_at, applied_by FROM platform.schema_migrations ORDER BY version;
 
 -- READ-ONLY. Strict scope-integrity constraint: ra_scope_integrity_ck exists and is validated;
@@ -559,7 +586,7 @@ and the error does not list them. After any failure, read the ledger before deci
 (`docs/runbooks/migration-0009-recovery.md`, scenarios 2 and 4) works through these cases; it is a design for review and
 has **not** been validated against production.
 
-**After commit.** There is **no down migration for 0008 or 0009** in this repository
+**After commit.** There is **no down migration for 0008, 0009 or any later migration** in this repository
 (`database/migrations/` contains forward files only). The repository provides no rollback command, and this runbook does
 not invent one.
 
@@ -615,7 +642,8 @@ Each gate is a hard stop. If a gate fails, **stop, do not continue to the next g
 
 - [ ] Ledger read immediately before the command shows exactly `0001`-`0008` and no `0009`; 0008 was applied by an
       earlier, separate invocation (the planner refuses otherwise, but it cannot tell whether the next items are true).
-- [ ] New application build deployed and healthy.
+- [ ] New application build deployed and healthy. It must be a build that does not query `app.student_programs`
+      (students runbook §2 item 7): `0021` is still unapplied after this step.
 - [ ] Every legacy writer stopped and attested by the deployment owner (7).
 - [ ] All section 5.4 counts are `0` (as a role that bypasses RLS).
 - [ ] 5.5 count not increasing across a quiet interval.
@@ -625,8 +653,8 @@ Each gate is a hard stop. If a gate fails, **stop, do not continue to the next g
 
 **Gate D: after 0009**
 
-- [ ] Command used was exactly `pnpm db:migrate --allow-contract 0009` (no `--`); exit code `0`; `applied [0009]` and
-      nothing else; ledger (5.1) shows `0001`-`0009`.
+- [ ] Command used was exactly `pnpm db:migrate --allow-contract 0009` (no `--`); exit code `0`; `applied [0009, 0010,
+      ..., 0018]` and nothing else; the `DEFERRED [0019, ..., 0023]` warning present; ledger (5.1) shows `0001`-`0018`.
 - [ ] Section 9.2 checks pass: ledger, `ra_scope_integrity_ck` validated, no `ra_scope_id_check`, FORCE RLS on all three,
       guard flags true, `violations = 0`.
 - [ ] Application healthy; grant at CAMPUS and DEPARTMENT scope behaves correctly (9.3).
@@ -640,7 +668,8 @@ Each gate is a hard stop. If a gate fails, **stop, do not continue to the next g
 **Verified on disposable databases only (never production):** the phase-boundary refusal in section 8 is covered by unit
 tests against the real migration files and by integration tests on throw-away PostgreSQL databases: with the ledger at
 `0007`, `--allow-contract 0009` is refused with nothing applied (no migration SQL sent, ledger rows unchanged); the
-ordinary run then applies 0008, and `--allow-contract 0009` then applies 0009. In the cases tried (a truncated or
+ordinary run then applies 0008, and `--allow-contract 0009` then applies `0009`-`0018` and defers `0019`-`0023`
+(`tests/integration/migration-contract.test.ts`, `tests/unit/migrate-plan.test.ts`). In the cases tried (a truncated or
 missing ledger on a populated database, a partial ledger, a schema built by only some migrations, a lone pre-existing
 table) the result was a refusal or a rolled-back failure, and 0009 was not applied. The CLI itself was also run against
 a disposable database to observe the refusal output and exit code (1), then the ordinary run and the explicit opt-in.
@@ -652,7 +681,7 @@ usage error (exit 1); `--allow-contract 0009` and `--allow-contract=0009` passed
 
 **Not verified / unknown:**
 
-- Lock-hold durations of 0008 and 0009 on production-sized data.
+- Lock-hold durations of 0008 and 0009 on production-sized data, and of `0010`-`0018`, which the 0009 invocation also applies and which this runbook does not analyze.
 - Whether production has role/database defaults for `lock_timeout` or `statement_timeout` on `app_migrator`.
 - Whether the SQL in sections 5 and 9 runs without modification on your server version (never executed).
 - How the runner is packaged and invoked in production (this repository only defines the `pnpm` scripts).

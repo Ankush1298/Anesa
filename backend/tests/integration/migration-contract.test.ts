@@ -183,7 +183,7 @@ describe('contract gate against a real database', () => {
     ).toHaveLength(0);
     expect(await constraintNames(db)).toContain('ra_scope_id_check');
 
-    // The documented order still works: ordinary run (0008 only, 0009 deferred), then the explicit opt-in (0009 only).
+    // The documented order still works: ordinary run (0008 only, 0009 onwards deferred), then the explicit opt-in (applies 0009 through 0018; 0019 onwards stay deferred).
     const step1 = await migrate({ connectionString: db.migrator });
     expect(step1.applied).toEqual(['0008']);
     expect(step1.deferred).toEqual([
