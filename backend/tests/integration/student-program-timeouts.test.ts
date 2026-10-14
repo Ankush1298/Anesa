@@ -402,18 +402,60 @@ describe('structural guards', () => {
 });
 
 describe('audit insert timeout (the business writes already done must roll back)', () => {
-  /** Holds ACCESS EXCLUSIVE on the current month's audit partition, so only the audit INSERT can wait. */
+  /**
+   * Holds ACCESS EXCLUSIVE on the current month's audit partition, so only the audit INSERT can wait.
+   *
+   * The partition is SHARED by every integration file running at the same time. A PENDING ACCESS EXCLUSIVE request
+   * queues every later writer of the partition behind it, including a writer in another file whose own transaction
+   * is waiting (at application level, invisible to PostgreSQL's deadlock detector) for a transaction that already
+   * holds the partition, as the nested transactions of designation.test.ts do. An unbounded wait here turned that
+   * into a 10 s lock timeout (503) in the other file. So the request never waits long: it is retried with a short
+   * lock_timeout until it is granted, and the queue it forms is released after each failed attempt.
+   */
   async function holdAuditPartition(): Promise<() => Promise<void>> {
     const [{ ym }] = (await adminQuery<{ ym: string }>(
       `SELECT to_char(now() AT TIME ZONE 'UTC', 'YYYY_MM') AS ym`,
     )) as [{ ym: string }];
     const c = new pg.Client({ connectionString: inject('dbAdminUrl') });
-    await c.connect();
-    await c.query('BEGIN');
-    await c.query(`LOCK TABLE app.audit_events_${ym} IN ACCESS EXCLUSIVE MODE`);
+    // Cleanup helpers never throw: they run on error paths (and in `release`), where a second failure must not hide
+    // the first. A broken connection drops its transaction and locks on the server anyway.
+    c.on('error', () => undefined);
+    const rollbackQuietly = async () => {
+      try {
+        await c.query('ROLLBACK');
+      } catch {
+        /* the connection is unusable; closing it releases everything */
+      }
+    };
+    const closeQuietly = async () => {
+      try {
+        await c.end();
+      } catch {
+        /* already closed or never connected */
+      }
+    };
+    try {
+      await c.connect();
+      for (let attempt = 0; ; attempt++) {
+        await c.query('BEGIN');
+        try {
+          await c.query(`SET LOCAL lock_timeout = '150ms'`);
+          await c.query(`LOCK TABLE app.audit_events_${ym} IN ACCESS EXCLUSIVE MODE`);
+          break;
+        } catch (err) {
+          await rollbackQuietly();
+          if ((err as { code?: string }).code !== '55P03' || attempt >= 100) throw err;
+        }
+        await new Promise((r) => setTimeout(r, 25 + Math.floor(Math.random() * 50)));
+      }
+    } catch (err) {
+      // connect, BEGIN, SET LOCAL, LOCK or an exhausted/non-55P03 retry: close the client, rethrow the ORIGINAL error
+      await closeQuietly();
+      throw err;
+    }
     return async () => {
-      await c.query('ROLLBACK');
-      await c.end();
+      await rollbackQuietly();
+      await closeQuietly();
     };
   }
 
