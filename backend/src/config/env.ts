@@ -1,4 +1,9 @@
 import { z } from 'zod';
+import {
+  CURSOR_KEY_ID_PATTERN,
+  CURSOR_MAX_KEYS,
+  isCanonicalCursorKey,
+} from '../shared/pagination/index.js';
 
 /**
  * Wraps a secret value so it cannot be printed or serialised by accident
@@ -47,6 +52,10 @@ const EnvSchema = z.object({
   TRUST_PROXY: booleanString,
   // Comma-separated browser origins allowed to call state-changing endpoints (CSRF origin check).
   APP_ORIGINS: z.string().default(''),
+  // Optional cursor-codec keys: both or neither (see parseCursorKeys). Left undefined, not defaulted, so an explicitly
+  // supplied empty string can be told apart from an absent variable and refused.
+  CURSOR_KEYS: z.string().optional(),
+  CURSOR_ACTIVE_KEY_ID: z.string().optional(),
 });
 
 /** Parses APP_ORIGINS: exact origins only (scheme://host[:port]), no paths, no wildcards. */
@@ -74,6 +83,78 @@ function parseOrigins(raw: string, problems: string[]): string[] {
   return out;
 }
 
+export interface CursorConfig {
+  readonly activeKeyId: string;
+  /** Every configured key, active and retiring, by ID. Values are canonical unpadded base64url of 32 bytes. */
+  readonly keys: ReadonlyMap<string, Secret>;
+}
+
+/**
+ * CURSOR_KEYS is `<keyId>:<key>` entries separated by commas (no whitespace is trimmed); CURSOR_ACTIVE_KEY_ID names the
+ * key used to issue new cursors, every other key only decodes. Both variables or neither: absent means cursor
+ * configuration is absent and nothing else changes. Errors name the variable and the rule, never a value.
+ */
+function parseCursorKeys(
+  rawKeys: string | undefined,
+  rawActive: string | undefined,
+  problems: string[],
+): CursorConfig | undefined {
+  if (rawKeys === undefined && rawActive === undefined) return undefined;
+  if (rawKeys === undefined || rawActive === undefined || rawKeys === '' || rawActive === '') {
+    if (rawKeys === undefined)
+      problems.push('CURSOR_KEYS: required when CURSOR_ACTIVE_KEY_ID is set');
+    if (rawActive === undefined)
+      problems.push('CURSOR_ACTIVE_KEY_ID: required when CURSOR_KEYS is set');
+    if (rawKeys === '') problems.push('CURSOR_KEYS: must not be empty');
+    if (rawActive === '') problems.push('CURSOR_ACTIVE_KEY_ID: must not be empty');
+    return undefined;
+  }
+
+  const before = problems.length;
+  const entries = rawKeys.split(',');
+  if (entries.length > CURSOR_MAX_KEYS) {
+    problems.push(`CURSOR_KEYS: at most ${CURSOR_MAX_KEYS} keys are allowed`);
+    return undefined;
+  }
+  const keys = new Map<string, Secret>();
+  const seenMaterial = new Set<string>();
+  entries.forEach((entry, index) => {
+    const n = index + 1;
+    const parts = entry.split(':');
+    const id = parts[0];
+    const key = parts[1];
+    if (parts.length !== 2 || id === undefined || key === undefined) {
+      problems.push(
+        `CURSOR_KEYS: entry ${n} must be <keyId>:<key> (empty entries are not allowed)`,
+      );
+    } else if (!CURSOR_KEY_ID_PATTERN.test(id)) {
+      problems.push(
+        `CURSOR_KEYS: entry ${n} key ID must be 1 to 16 letters, digits, "-" or "_", starting with a letter or digit`,
+      );
+    } else if (!isCanonicalCursorKey(key)) {
+      problems.push(
+        `CURSOR_KEYS: entry ${n} key must be the canonical unpadded base64url encoding of exactly 32 bytes`,
+      );
+    } else if (keys.has(id)) {
+      problems.push(`CURSOR_KEYS: entry ${n} repeats a key ID`);
+    } else if (seenMaterial.has(key)) {
+      problems.push(`CURSOR_KEYS: entry ${n} repeats key material`);
+    } else {
+      seenMaterial.add(key);
+      keys.set(id, new Secret(key));
+    }
+  });
+
+  if (!CURSOR_KEY_ID_PATTERN.test(rawActive)) {
+    problems.push(
+      'CURSOR_ACTIVE_KEY_ID: must be 1 to 16 letters, digits, "-" or "_", starting with a letter or digit',
+    );
+  } else if (problems.length === before && !keys.has(rawActive)) {
+    problems.push('CURSOR_ACTIVE_KEY_ID: must name one of the keys in CURSOR_KEYS');
+  }
+  return problems.length === before ? { activeKeyId: rawActive, keys } : undefined;
+}
+
 export interface AppConfig {
   readonly env: 'development' | 'test' | 'production';
   readonly host: string;
@@ -87,6 +168,8 @@ export interface AppConfig {
     readonly ssl: boolean;
     readonly poolMax: number;
   };
+  /** Present only when CURSOR_KEYS and CURSOR_ACTIVE_KEY_ID are both configured. Nothing reads it yet. */
+  readonly cursor?: CursorConfig;
 }
 
 export class ConfigError extends Error {
@@ -111,6 +194,7 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
 
   const problems: string[] = [];
   const allowedOrigins = parseOrigins(e.APP_ORIGINS, problems);
+  const cursor = parseCursorKeys(e.CURSOR_KEYS, e.CURSOR_ACTIVE_KEY_ID, problems);
   if (e.NODE_ENV === 'production') {
     if (allowedOrigins.length === 0) {
       problems.push('APP_ORIGINS: required in production (CSRF origin allow-list)');
@@ -138,5 +222,6 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
       ssl: e.DATABASE_SSL === 'require',
       poolMax: e.DATABASE_POOL_MAX,
     },
+    ...(cursor ? { cursor } : {}),
   };
 }
